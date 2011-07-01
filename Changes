@@ -1,0 +1,6 @@
+Revision history for Perl extension Finance::Bank::NFCU.
+
+0.01  Sun Jun 12 10:58:38 2011
+	- original version; created by h2xs 1.23 with options
+		-XA -n Finance::Bank::NFCU
+

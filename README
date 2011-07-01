@@ -1,0 +1,43 @@
+Finance-Bank-NFCU version 0.01
+==============================
+
+WARNING: This module is designed to interact with your online
+banking service at Navy Federal Credit Union. You are fully
+responsible for the actions taken with this module and you are
+expected to audit the code yourself to be sure that the
+security, accuracy and quality is up to your expectations.
+
+The author cannot assume responsibility for any untoward or
+nefarious activities attempted with this software.
+
+INSTALLATION
+
+To install this module type the following:
+
+   perl Makefile.PL
+   make
+   make test
+   make install
+
+DEPENDENCIES
+
+This module requires these other modules and libraries:
+
+  WWW::Mechanize
+  Data::Dumper
+  Date::Manip::TZ
+  Env
+  Readonly
+  File::Spec
+  File::Slurp
+
+COPYRIGHT AND LICENCE
+
+Put the correct copyright and licence information here.
+
+Copyright (C) 2011 by Dylan Doxey
+
+This library is free software; you can redistribute it and/or modify
+it under the same terms as Perl itself, either Perl version 5.10.1 or,
+at your option, any later version of Perl 5 you may have available.
+
