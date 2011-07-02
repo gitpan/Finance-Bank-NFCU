@@ -6,13 +6,14 @@ WriteMakefile(
     NAME              => 'Finance::Bank::NFCU',
     VERSION_FROM      => 'lib/Finance/Bank/NFCU.pm', # finds $VERSION
     PREREQ_PM         => {
-        'WWW::Mechanize'  => '1.66', # other versions not tested
         'Data::Dumper'    => '2.101',
         'Date::Manip::TZ' => '5.56',
+        'DateTime'        => '0.65',
         'Env'             => '1.00',
-        'Readonly'        => '1.02',
-        'File::Spec'      => '3.33',
         'File::Slurp'     => '9999.13',
+        'File::Spec'      => '3.33',
+        'Readonly'        => '1.02',
+        'WWW::Mechanize'  => '1.66',
     },
     ($] >= 5.005 ?     ## Add these new keywords supported since 5.005
       (ABSTRACT_FROM  => 'lib/Finance/Bank/NFCU.pm', # retrieve abstract from module

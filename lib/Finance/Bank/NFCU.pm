@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.01;
+our $VERSION = 0.02;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_ROW_REGEX, $PAYMENT_REGEX,
     $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX, $ESTATEMENT_PERIOD_REGEX, $TIME_ZONE );
@@ -741,7 +741,9 @@ sub get_balances {
 sub get_transactions {
     my ( $self ) = @_;
 
-    my $billpay_ra    = $self->get_billpay_transactions();
+    my $billpay_ra = $self->get_billpay_transactions(
+        { status_ra => [qw( pending paid )] }
+    );
     my $recent_ra     = $self->get_recent_transactions();
     my $estatement_ra = $self->get_estatement_transactions();
 

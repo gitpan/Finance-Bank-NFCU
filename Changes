@@ -1,5 +1,10 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.02  Fri Jul 01 22:43:30 2011
+    - updated dependency list
+    - get_transactions fix for including applicable 
+        complete billpay transactions
+
 0.01  Sun Jun 12 10:58:38 2011
 	- original version; created by h2xs 1.23 with options
 		-XA -n Finance::Bank::NFCU
