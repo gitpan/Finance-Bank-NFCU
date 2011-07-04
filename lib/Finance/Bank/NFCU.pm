@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.02;
+our $VERSION = 0.03;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_ROW_REGEX, $PAYMENT_REGEX,
     $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX, $ESTATEMENT_PERIOD_REGEX, $TIME_ZONE );
@@ -87,8 +87,86 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
 
 # internal helper functions
 {
+    $Carp::Internal{ (__PACKAGE__) }++;
+
+    my $error_level = 'non-fatal';
     my $now = time;
-    my ( %epoch_for, %date_for, %regexes_for, %item_for );
+    my ( %epoch_for, %date_for, %criterion_for, %item_for );
+
+    sub _set_error_level {
+        return $error_level = $_[0];
+    }
+
+    sub _parse_config {
+        my ( $config_rh, $config_spec_rh ) = @_;
+
+        return
+            if !$config_rh;
+
+        my $calling_func = ( caller 1 )[3];
+
+        for my $key (keys %{ $config_rh }) {
+
+            croak "$key is not a supported config option for $calling_func"
+                if not exists $config_spec_rh->{$key};
+        }
+
+        my @values;
+
+        my @keys = sort keys %{ $config_spec_rh };
+
+        KEY:
+        for my $key (@keys) {
+
+            if ( defined $config_rh->{$key} ) {
+
+                my $spec  = $config_spec_rh->{$key};
+                my $value = $config_rh->{$key};
+                my $type  = ref $spec;
+
+                if ( $type ne 'Regexp' ) {
+
+                    if ( ref $value eq $type ) {
+
+                        push @values, $value;
+                        next KEY;
+                    }
+                    elsif ( defined $value ) {
+
+                        croak "$key is expected to have a ", ( ref $spec ), " type reference";
+                    }
+
+                    push @values, $spec;
+                    next KEY;
+                }
+
+                if ( $value =~ $spec ) {
+
+                    $value = $1;
+
+                    push @values, $value;
+                    next KEY;
+                }
+
+                croak "$value is not a valid value for $key for $calling_func";
+            }
+            else {
+
+                push @values, undef;
+            }
+        }
+
+        return @values
+            if wantarray;
+
+        return
+            if !@values;
+
+        return $values[0]
+            if @keys == 1;
+
+        return \@values;
+    }
 
     sub _trans_cmp {
         my ( $m, $n ) = @_;
@@ -108,27 +186,17 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
     sub _as_dollars {
         for my $rs (@_) {
 
-            if ( ${$rs} =~ m{\A -? ( \d+ ) [.]? ( \d* ) \z}xms ) {
+            my ( $dollars, $cents, $is_negative ) = _parse_money( $rs );
 
-                my $dollars    = $1;
-                my $cents      = $2 || '00';
-                my $multiplier = ${$rs} < 0 ? '-' : "";
+            if ( $dollars ) {
 
-                $cents = ( substr $dollars, -2 ) . $cents;
-                $cents = sprintf '%02u', ( substr $cents, 0, 6 );
-                $cents = substr $cents, 0, 2;
-
-                $dollars = reverse substr $dollars, 0, -2;
+                $dollars = reverse $dollars;
                 $dollars ||= '0';
                 $dollars =~ s/(\d\d\d)(?=\d)(?!\d*\.)/$1,/g;
                 $dollars = scalar reverse $dollars;
-
-                ${$rs} = sprintf '$%s%s', "$dollars.$cents", $multiplier;
             }
-            else {
 
-                warn "unable to parse: ", ${$rs};
-            }
+            ${$rs} = sprintf '$%s.%02u%s', $dollars, ( substr $cents . '00', 0, 2 ), ( $is_negative ? '-' : "" );
         }
         return;
     }
@@ -136,23 +204,78 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
     sub _as_cents {
         for my $rs (@_) {
 
-            if ( ${$rs} =~ m{\A [\$]? ( [,\d]+ ) [.] ( \d+ ) ( \D )? \z}xms ) {
+            my ( $dollars, $cents, $is_negative ) = _parse_money( $rs );
 
-                my $dollars    = $1;
-                my $cents      = $2;
-                my $multiplier = $3 ? -1 : 1;
+            $cents =~ s{\D}{}xmsg;
 
-                $dollars =~ s{\D}{}xmsg;
+            $cents .= '00';
+            $cents = $dollars . ( substr $cents, 0, 2 ) . '.' . ( substr $cents, 2 );
+            $cents *= $is_negative ? -1 : 1;
 
-                ${$rs} = sprintf '%d', $cents + 100 * $dollars;
-                ${$rs} *= $multiplier;
+            ${$rs} = sprintf '%.10f', $cents;
+            ${$rs} =~ s{ [0]+ \z}{}xmsg;
+            ${$rs} =~ s{ \D \z}{}xmsg;
+        }
+        return;
+    }
+
+    sub _parse_money {
+        my ( $rs ) = @_;
+
+        my ($is_dollars)  = ${$rs} =~ s{(\$)}{}xms;
+        my ($is_negative) = ${$rs} =~ s{(-)}{}xms;
+
+        my ( $dollars, $cents ) = ( 0 ) x 2;
+
+        if ( ${$rs} =~ m{\A ( [,\d]+ ) ( [.] \d+ ) \z}xms ) {
+
+            if ( $is_dollars ) {
+
+                ( $dollars, $cents ) = ( $1, $2 );
+
+                $dollars =~ s{,}{}xmsg;
+                $cents = substr $cents, 1;
             }
             else {
 
-                warn "unable to parse: ", ${$rs};
+                ( $dollars, $cents ) = ( $1, $2 );
+
+                $dollars =~ s{,}{}xmsg;
+
+                $cents   = ( substr $dollars, -2 ) . $cents;
+                $dollars = substr $dollars, 0, -2;
             }
         }
-        return;
+        elsif ( ${$rs} =~ m{\A ( [,\d]+ ) \z}xms ) {
+
+            if ( $is_dollars ) {
+
+                ( $dollars, $cents ) = ( $1, 0 );
+
+                $dollars =~ s{,}{}xmsg;
+            }
+            else {
+
+                ( $dollars, $cents ) = ( 0, '0' . $1 . '00' );
+
+                $cents =~ s{,}{}xmsg;
+
+                $dollars = substr $cents, 0, -4;
+                $cents   = substr $cents, ( length $dollars );
+            }
+        }
+        else {
+
+            my $line = ( caller 1 )[2];
+
+            warn "$line - unable to parse: ", ${$rs};
+            return;
+        }
+
+        $dollars =~ s{\A 0+ }{}xmsg;
+        $cents   =~ s{ 0+ \z}{}xmsg;
+
+        return ( $dollars, $cents, $is_negative );
     }
 
     sub _merge {
@@ -184,11 +307,14 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
 
                     my $last_epoch = $last_transaction_rh->{epoch};
                     my $epoch      = $transaction_rh->{epoch};
+                    my $status     = lc $transaction_rh->{status};
 
+                    # overlap
                     next TRANS
-                        if $epoch < $last_epoch; # overlap
+                        if $epoch < $last_epoch
+                            && $status ne 'predicted';
 
-                    if ( not defined $transaction_rh->{balance} ) {
+                    if ( $status ne 'confirmed' ) {
 
                         my $balance = $last_transaction_rh->{balance};
                         my $amount  = $transaction_rh->{amount};
@@ -215,11 +341,11 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
 
         map { delete $_->{_list_number} } @merger;
 
-        return _audit_transaction_list( \@merger );
+        return _audit_transaction_list( \@merger, 0 );
     }
 
     sub _audit_transaction_list {
-        my ( $transaction_ra, $reverse_flag, $error_level ) = @_;
+        my ( $transaction_ra, $reverse_flag ) = @_;
 
         return $transaction_ra
             if !@{ $transaction_ra || [] };
@@ -239,10 +365,11 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
             if ( $balance_str != $expected_balance_str ) {
 
                 my $message =
-                    sprintf 'transaction discrepancy (%s != %s) at: %s',
-                    $balance_str,
-                    $expected_balance_str,
-                    Dumper($transaction_rh);
+                    sprintf 'transaction discrepancy (%s != %s) at: %s%s',
+                            $balance_str,
+                            $expected_balance_str,
+                            Dumper( $transaction_rh ),
+                            Dumper( $transaction_ra );
 
                 die $message
                     if $error_level eq 'fatal';
@@ -259,14 +386,29 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
     sub _formatted_date {
         my $epoch = defined $_[0] ? $_[0] : $now;
 
-        return $date_for{$epoch}
-            if exists $date_for{$epoch};
+        my $context = wantarray ? 'list' : 'scalar';
+        my $key = "$epoch/$context";
+
+        if ( exists $date_for{$key} ) {
+
+            return $date_for{$key}
+                if $context eq 'scalar';
+
+            return @{ $date_for{$key} };
+        }
 
         my $dt = DateTime->from_epoch( epoch => $epoch );
 
-        $date_for{$epoch} = $dt->mdy('/');
+        $date_for{$key} = $dt->mdy('/');
 
-        return $date_for{$epoch}
+        if ( $context eq 'list' ) {
+
+            $date_for{$key} = [ split /\D/, $date_for{$key} ];
+
+            return @{ $date_for{$key} };
+        }
+
+        return $date_for{$key};
     }
 
     sub _compute_epoch {
@@ -319,6 +461,8 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
             qr{ Visa \s Check \s Card \s \d+ \s }xmsi,
             qr{ Paid \s to $dash_regex }xmsi,
             qr{ [A-Z]{2} US (?: \b | \z )}xms,
+            qr{ \s Chk \s \d+ \z}xms,
+            qr{ \s 0jqw \s \d+ \z}xms,
             qr{ \A \s* \d+ - \d+ - \d+ \s }xms,
             qr{ \A $dash_regex }xmsi,
             qr{ (?: \A \s* | \s* \z ) }xms,
@@ -339,209 +483,141 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
     }
 
     sub _categorize {
-        my ( $item ) = @_;
+        my ( $item, $amount ) = @_;
 
-        if ( !keys %regexes_for ) {
+        if ( !keys %criterion_for ) {
 
-            %regexes_for = (
+            %criterion_for = (
                 'administrative' => [
-                    qr{ (?: \b | \s ) transfer \s }xmsi,
-                    qr{ \b dividend \b }xmsi,
-                    qr{ \s u \S? haul (?: \b | \s ) }xmsi,
-                    qr{ \s fedex \s }xmsi,
-                    qr{ american \s inspectio }xmsi,
-                ],
-                'yuki' => [
-                    qr{ transfer .+? yuki }xmsi,
+                    [ qr{ (?: \b | \s ) transfer \s }xmsi, ],
+                    [ qr{ \b dividend \b }xmsi, ],
                 ],
                 'health' => [
-                    qr{ \s fertlity \s }xmsi,
-                    qr{ \s quest \s }xmsi,
-                    qr{ \s cvs (?: \s* pharmacy )? \s }xmsi,
-                    qr{ \s unoptical \s }xmsi,
-                    qr{ \s william \s v \s carlo \s }xmsi,
+                    [ qr{ \s pharmacy \s }xmsi, ],
                 ],
                 'charity' => [
-                    qr{ \W democrats \W }xmsi,
-                    qr{ \s cancer \s }xmsi,
-                    qr{ \s moveon[.]org \s }xmsi,
-                    qr{ \s komen \s }xmsi,
-                    qr{ \s barackobama[.]c }xmsi,
-                    qr{ \s rob \s miller \s }xmsi,
+                    [ qr{ \W democrats \W }xmsi, ],
+                    [ qr{ \s cancer \s }xmsi, ],
+                    [ qr{ \s moveon[.]org \s }xmsi, ],
+                    [ qr{ \s komen \s }xmsi, ],
+                    [ qr{ \s barackobama[.]c }xmsi, ],
+                    [ qr{ \s rob \s miller \s }xmsi, ],
                 ],
                 'entertainment' => [
-                    qr{ bigstar \W tv }xmsi,
-                    qr{ \W netflix \W }xmsi,
-                    qr{ south \s sun \s products }xmsi,
-                    qr{ book \s off \s }xmsi,
-                    qr{ old \s town \s liquor \s }xmsi,
-                    qr{ hortensia \s liquor \s }xmsi,
-                    qr{ \s barclays \s }xmsi,
+                    [ qr{ bigstar \W tv }xmsi, ],
+                    [ qr{ \W netflix \W }xmsi, ],
+                    [ qr{ \s liquor \s }xmsi, ],
                 ],
                 'gasoline' => [
-                    qr{ \s shell \s service }xmsi,
-                    qr{ \s oil \s }xmsi,
-                    qr{ \s arco \W }xmsi,
-                    qr{ \s costco \s gas \s }xmsi,
-                    qr{ \s lemon \s grove \s 76 \s }xmsi,
+                    [ qr{ \s shell \s service }xmsi, ],
+                    [ qr{ \s oil \s }xmsi, ],
+                    [ qr{ \s arco \W }xmsi, ],
+                    [ qr{ \s costco \s gas \s }xmsi, ],
                 ],
                 'income' => [
-                    qr{ \s tierranet \s }xmsi,
-                    qr{ \A (?: atm \s )? deposit (?: \s | \b ) }xmsi,
-                ],
-                'education' => [
-                    qr{ \s u[.]s[.] \s dept[.] \s of \s ed \s }xmsi,
-                    qr{ \s sdccd \s }xmsi,
-                    qr{ \s mesa \s college \s }xmsi,
-                ],
-                'travel' => [
-                    qr{ \s olancha \s }xmsi,
-                    qr{ \s ontario \s }xmsi,
-                    qr{ \s kennewick \s }xmsi,
-                    qr{ \s spokane \s }xmsi,
-                    qr{ \s winnemucca \s }xmsi,
-                    qr{ \s maverik \s }xmsi,
-                    qr{ \s supershuttle \s }xmsi,
-                    qr{ topaz \s lodge \s }xmsi,
-                    qr{ \s portland \s }xmsi,
-                    qr{ \s hesperia \s }xmsi,
-                    qr{ \s alaska \s air \s }xmsi,
-                    qr{ \s lone \s pine? \s ca }xmsi,
-                ],
-                'fraud' => [
-                    qr{ \s norton \s }xmsi,
-                ],
-                'government' => [
-                    qr{ check \s 1622 }xmsi,
-                ],
-                'housing' => [
-                    qr{ \s tierra \s prop }xmsi,
-                    qr{ \s bank \s of \s america \s }xmsi,
-                    qr{ (?: \b | \s ) bac \s* home \s* loan }xmsi,
-                    qr{ \W nationwide/all }xmsi,
-                    qr{ (?: \b | \s ) nationwide \s* allied \s }xmsi,
-                ],
-                'business' => [
-                    qr{ \s totalchoice \s }xmsi,
-                    qr{ \s usps \s }xmsi,
-                    qr{ \s office \s depot \s }xmsi,
-                ],
-                'cell phones' => [
-                    qr{ (?: \b | \s ) verizon \s }xmsi,
-                ],
-                'cars' => [
-                    qr{ \s dmv \W }xmsi,
-                    qr{ \s smog \s }xmsi,
-                    qr{ \s autozone \s }xmsi,
-                    qr{ \s advantec \s }xmsi,
-                    qr{ (?: \b | \s ) napa \s store \s }xmsi,
-                    qr{ (?: \b | \s ) jiffy \s lube \s }xmsi,
-                    qr{ (?: \b | \s ) toyota/lexus \s }xmsi,
+                    [ qr{ \s deposit \s }xmsi, ],
                 ],
                 'insurance' => [
-                    qr{ \s auto \s club \s }xmsi,
-                    qr{ (?: \b | \s ) allied \s insurance }xmsi,
+                    [ qr{ nationwide \W* allied }xmsi, ],
+                    [ qr{ \s geico \s }xmsi, ],
+                    [ qr{ \s all \W* state \s }xmsi, ],
                 ],
-                'cats' => [
-                    qr{ \s abc \s vet \s }xmsi,
-                    qr{ \s petco \s }xmsi,
+                'education' => [
+                    [ qr{ \s u[.]s[.] \s dept[.] \s of \s ed \s }xmsi, ],
+                    [ qr{ \s sdccd \s }xmsi, ],
+                    [ qr{ \s college \s }xmsi, ],
                 ],
-                'unaccounted' => [
-                    qr{ \s paypal \s }xmsi,
-                    qr{ atm \s withdrawal }xmsi,
-                    qr{ check \s 1650 }xmsi,
-                    qr{ check \s 1626 }xmsi,
-                    qr{ check \s 1623 }xmsi,
-                    qr{ check \s 1624 }xmsi,
-                    qr{ check \s 1625 }xmsi,
-                    qr{ check \s 5860 }xmsi,
-                    qr{ check \s 5837 }xmsi,
-                    qr{ check \s 5835 }xmsi,
-                    qr{ check \s 5836 }xmsi,
+                'housing' => [
+                    [ qr{ \s mortgage \s }xmsi, ],
+                    [ qr{ home \s* loan }xmsi, ],
+                ],
+                'cell phones' => [
+                    [ qr{ \s verizon \s }xmsi, ],
+                    [ qr{ \s nextel \s }xmsi, ],
+                    [ qr{ \s sprint \s }xmsi, ],
+                ],
+                'cars' => [
+                    [ qr{ \s dmv \W }xmsi, ],
+                    [ qr{ \s smog \s }xmsi, ],
+                    [ qr{ \s autozone \s }xmsi, ],
+                    [ qr{ napa \s store \s }xmsi, ],
+                    [ qr{ jiffy \s lube \s }xmsi, ],
+                    [ qr{ toyota/lexus \s }xmsi, ],
+                ],
+                'insurance' => [
+                    [ qr{ \s auto \s club \s }xmsi, ],
+                    [ qr{ (?: \b | \s ) allied \s insurance }xmsi, ],
                 ],
                 'internet' => [
-                    qr{ (?: \b | \s ) cox \s cable \s }xmsi,
-                    qr{ (?: \b | \s ) cox \s communications }xmsi,
-                ],
-                'water' => [
-                    qr{ (?: \b | \s ) otay \s water \s }xmsi,
-                ],
-                'trash' => [
-                    qr{ (?: \b | \s ) republic \s service \s }xmsi,
+                    [ qr{ (?: \b | \s ) cox \s cable \s }xmsi, ],
+                    [ qr{ (?: \b | \s ) cox \s communications }xmsi, ],
                 ],
                 'utilities' => [
-                    qr{ \s gas \s & (?: amp; )? \s electric \b }xmsi,
-                    qr{ \s sdg \s & (?: amp; )? e \s }xmsi,
+                    [ qr{ \s gas \s & (?: amp; )? \s electric \b }xmsi, ],
                 ],
                 'shopping' => [
-                    qr{ \W newegg \W }xmsi,
-                    qr{ (?: \b | \s ) home \s depot \s }xmsi,
-                    qr{ \s tech \s 4 \s less \s }xmsi,
-                    qr{ \s best \s buy \s }xmsi,
-                    qr{ \s ikea \s }xmsi,
-                    qr{ \s dixieline \s }xmsi,
-                    qr{ \s groupon \s }xmsi,
-                    qr{ \s mega \s liquidation \s }xmsi,
-                    qr{ \s outlet \s }xmsi,
-                    qr{ \s costco \s }xmsi,
-                    qr{ \s target \s }xmsi,
-                    qr{ \s amazon (?: [.] com )? \s }xmsi,
-                    qr{ s \s electronics \s }xmsi,
+                    [ qr{ \W newegg \W }xmsi, ],
+                    [ qr{ (?: \b | \s ) home \s depot \s }xmsi, ],
+                    [ qr{ \s tech \s 4 \s less \s }xmsi, ],
+                    [ qr{ \s best \s buy \s }xmsi, ],
+                    [ qr{ \s ikea \s }xmsi, ],
+                    [ qr{ \s dixieline \s }xmsi, ],
+                    [ qr{ \s costco \s }xmsi, ],
+                    [ qr{ \s target \s }xmsi, ],
+                    [ qr{ \s amazon (?: [.] com )? \s }xmsi, ],
                 ],
                 'fast food' => [
-                    qr{ \s chin &[#]039; s \s }xmsi,
-                    qr{ \s sammy &[#]039; s \s }xmsi,
-                    qr{ \s noodles \s & }xmsi,
-                    qr{ \s jack \s in \s the \s box }xmsi,
-                    qr{ \s islands \s }xmsi,
-                    qr{ \s juice \s blend \s }xmsi,
-                    qr{ \s mediterran \s }xmsi,
-                    qr{ \s chai \s tian \s }xmsi,
-                    qr{ \s sushi \s }xmsi,
-                    qr{ \s tartine \s }xmsi,
-                    qr{ \s saffron \s }xmsi,
-                    qr{ \s bistro \s }xmsi,
-                    qr{ \s sichuan \s }xmsi,
-                    qr{ \s carljr \d }xmsi,
-                    qr{ \s country \s kabob \s }xmsi,
-                    qr{ \s espresso \s }xmsi,
-                    qr{ \s izumi \s }xmsi,
-                    qr{ \s las \s brasas \s }xmsi,
-                    qr{ \s pizza \s }xmsi,
-                    qr{ \s greek \s }xmsi,
-                    qr{ \s yogurt \s }xmsi,
-                    qr{ \s niban \s }xmsi,
-                    qr{ \s brioche \s }xmsi,
-                    qr{ \s chipotle \s }xmsi,
-                    qr{ \s cafe \s }xmsi,
-                    qr{ \s pho \s }xmsi,
-                    qr{ \s pappalecco \s }xmsi,
-                    qr{ \s submarina \s }xmsi,
-                    qr{ \s subway \s }xmsi,
-                    qr{ \s city \s wok \s }xmsi,
-                    qr{ \s starbucks \s }xmsi,
-                    qr{ \s sbux \s }xmsi,
+                    [ qr{ \s sammy &[#]039; s \s }xmsi, ],
+                    [ qr{ \s noodles \s & }xmsi, ],
+                    [ qr{ \s jack \s in \s the \s box }xmsi, ],
+                    [ qr{ \s islands \s }xmsi, ],
+                    [ qr{ \s juice \s blend \s }xmsi, ],
+                    [ qr{ \s sushi \s }xmsi, ],
+                    [ qr{ \s bistro \s }xmsi, ],
+                    [ qr{ \s carljr \d }xmsi, ],
+                    [ qr{ \s espresso \s }xmsi, ],
+                    [ qr{ \s las \s brasas \s }xmsi, ],
+                    [ qr{ \s pizza \s }xmsi, ],
+                    [ qr{ \s greek \s }xmsi, ],
+                    [ qr{ \s yogurt \s }xmsi, ],
+                    [ qr{ \s chipotle \s }xmsi, ],
+                    [ qr{ \s cafe \s }xmsi, ],
+                    [ qr{ \s pho \s }xmsi, ],
+                    [ qr{ \s submarina \s }xmsi, ],
+                    [ qr{ \s subway \s }xmsi, ],
+                    [ qr{ \s city \s wok \s }xmsi, ],
+                    [ qr{ \s starbucks \s }xmsi, ],
+                    [ qr{ \s sbux \s }xmsi, ],
                 ],
                 'groceries' => [
-                    qr{ \s 99 \s ranch \s }xmsi,
-                    qr{ \s ranch \s market \s }xmsi,
-                    qr{ \s seafood \s city \s  }xmsi,
-                    qr{ \s supermarket \s }xmsi,
-                    qr{ \s marukai \s }xmsi,
-                    qr{ \s ralph (?: &[#]039; )? s \s }xmsi,
-                    qr{ \s mitsuwa \s }xmsi,
-                    qr{ \s fresh \s &amp; \s easy \s }xmsi,
-                    qr{ \s nijiya \s }xmsi,
-                    qr{ \s henrys \s }xmsi,
-                    qr{ \s vons \s }xmsi,
-                    qr{ \s albertsons \s }xmsi,
+                    [ qr{ \s 99 \s ranch \s }xmsi, ],
+                    [ qr{ \s ranch \s market \s }xmsi, ],
+                    [ qr{ \s seafood \s city \s  }xmsi, ],
+                    [ qr{ \s supermarket \s }xmsi, ],
+                    [ qr{ \s marukai \s }xmsi, ],
+                    [ qr{ \s ralph (?: &[#]039; )? s \s }xmsi, ],
+                    [ qr{ \s mitsuwa \s }xmsi, ],
+                    [ qr{ \s fresh \s &amp; \s easy \s }xmsi, ],
+                    [ qr{ \s nijiya \s }xmsi, ],
+                    [ qr{ \s henrys \s }xmsi, ],
+                    [ qr{ \s vons \s }xmsi, ],
+                    [ qr{ \s albertsons \s }xmsi, ],
                 ],
             );
         }
 
-        for my $category (keys %regexes_for) {
+        for my $category (keys %criterion_for) {
 
-            for my $regex (@{ $regexes_for{$category} }) {
+            CRIT:
+            for my $criterion_ra (@{ $criterion_for{$category} }) {
+
+                my ( $regex, $range_ra ) = @{ $criterion_ra };
+
+                if ( $range_ra ) {
+
+                    next CRIT
+                        if $range_ra->[1] < $amount || $amount < $range_ra->[0];
+                }
 
                 return $category
                     if $item =~ $regex;
@@ -669,6 +745,13 @@ sub config {
         }
     }
 
+    my $error_level = $self->{__error_level} || 'non-fatal';
+
+    carp "error_level should be 'fatal' or 'non-fatal'"
+        if $error_level !~ m{\A (?: non- )? fatal \z}xms;
+
+    _set_error_level( $error_level );
+
     my $cache_dir = $self->{__cache_dir};
 
     if ($cache_dir) {
@@ -716,7 +799,11 @@ sub get_balances {
                     detail_url     => $2,
                     account        => $3,
                     balance        => $4,
+                    balance_str    => $4,
                 );
+
+                _as_cents( \$balance{balance} );
+
                 push @balances, \%balance;
 
                 $self->{__nfcu_account_url_rh}->{ lc $balance{account} } = \%balance;
@@ -753,11 +840,29 @@ sub get_transactions {
 sub get_recent_transactions {
     my ( $self, $config_rh ) = @_;
 
-    $config_rh ||= {};
+    my ( $account, $from_date, $from_epoch, $to_date, $to_epoch ) = _parse_config(
+        $config_rh,
+        {   account    => qr{\A ( \w+ \s \w+ ) \z}xms,
+            from_date  => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
+            from_epoch => qr{\A ( \d+ ) \z}xms,
+            to_date    => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
+            to_epoch   => qr{\A ( \d+ ) \z}xms,
+        }
+    );
 
-    my $account = $config_rh->{account} || 'EveryDay Checking';
-    my $from    = _compute_epoch( $config_rh->{from}, 0 );
-    my $to      = _compute_epoch( $config_rh->{to},   time );
+    if ( $from_date && !$from_epoch ) {
+
+        $from_epoch = _compute_epoch( $from_date );
+    }
+
+    if ( $to_date && !$to_epoch ) {
+
+        $to_epoch = _compute_epoch( $to_date );
+    }
+
+    $account    ||= 'EveryDay Checking';
+    $from_epoch ||= 0;
+    $to_epoch   ||= time;
 
     my $cache_dir     = $self->{__cache_dir};
     my $categorize_rc = $self->{__categorize_rc} || \&_categorize;
@@ -813,17 +918,18 @@ sub get_recent_transactions {
         my $amount_str  = $data[2];
         my $balance_str = $data[3];
         my $epoch       = _compute_epoch($date);
-        my $category    = $categorize_rc->( $data[1] );
 
         next ROW
-            if $epoch > $to;
+            if $epoch > $to_epoch;
 
         last ROW
-            if $epoch <= $from;
+            if $epoch <= $from_epoch;
 
         my ( $amount, $balance ) = ( $amount_str, $balance_str );
 
         _as_cents( \$amount, \$balance );
+
+        my $category = $categorize_rc->( $item, $amount );
 
         my %transaction = (
             amount      => $amount,
@@ -836,22 +942,24 @@ sub get_recent_transactions {
             item        => $tidy_rc->($item),
             status      => $status,
         );
+
         push @transactions, \%transaction;
     }
 
-#    my $calling_package = ( caller 1 )[3] || "";
-#    return \@transactions
-#        if -1 != index $calling_package, __PACKAGE__;
-
-    return _audit_transaction_list( \@transactions, 0, $self->{__error_level} );
+    return _audit_transaction_list( \@transactions, 0 );
 }
 
 sub get_estatement_transactions {
     my ( $self, $config_rh ) = @_;
 
-    $config_rh ||= {};
+    my ( $account ) = _parse_config(
+        $config_rh,
+        {   account    => qr{\A ( \w+ \s \w+ ) \z}xms,
+        }
+    );
 
-    my $account       = $config_rh->{account} || 'EveryDay Checking';
+    $account ||= 'EveryDay Checking';
+
     my $cache_dir     = $self->{__cache_dir};
     my $categorize_rc = $self->{__categorize_rc} || \&_categorize;
     my $tidy_rc       = $self->{__tidy_rc} || \&_tidy_item;
@@ -902,7 +1010,7 @@ sub get_estatement_transactions {
         my ( $m, $d, $y ) = $link->text() =~ m{( \d+ ) \D ( \d+ ) \D ( \d+ )}xms;
 
         my $cache_filename = _cache_filename( $cache_dir, "estatement_$m.$d.$y", 'indefinite' );
-        my $html = _fetch_cache($cache_filename);
+        my $html           = _fetch_cache($cache_filename);
 
         if ( !$html ) {
 
@@ -959,31 +1067,30 @@ sub get_estatement_transactions {
             my $date = sprintf '%0.2d/%0.2d/%d', $month, $day, $year_for{$month};
             my $epoch = _compute_epoch($date);
 
+            ( $amount_str, $balance_str ) = ( '$' . $amount_str, '$' . $balance_str );
+
             my ( $amount, $balance ) = ( $amount_str, $balance_str );
 
             _as_cents( \$amount, \$balance );
+
+            my $category = $categorize_rc->( $item, $amount );
 
             my %transaction = (
                 amount      => $amount,
                 amount_str  => $amount_str,
                 balance     => $balance,
                 balance_str => $balance_str,
-                category    => $categorize_rc->($item),
+                category    => $category,
                 date        => $date,
                 epoch       => $epoch,
                 item        => $tidy_rc->($item),
                 status      => 'Confirmed',
             );
-
             push @transactions, \%transaction;
         }
     }
 
-#    my $calling_package = ( caller 1 )[3] || "";
-#    return \@transactions
-#        if -1 != index $calling_package, __PACKAGE__;
-
-    return _audit_transaction_list( \@transactions, 'reverse', $self->{__error_level} );
+    return _audit_transaction_list( \@transactions, 'reverse' );
 }
 
 sub get_billpay_transactions {
@@ -1008,6 +1115,7 @@ sub get_billpay_transactions {
     else {
 
         $target{pending} = 1;
+        $target{paid}    = 1;
     }
 
     my $account       = $config_rh->{account} || 'EveryDay Checking';
@@ -1097,10 +1205,12 @@ sub get_billpay_transactions {
             _as_cents( \$amount );
         }
 
+        my $category = $categorize_rc->( $item, $amount );
+
         my %transaction = (
             amount      => $amount,
             amount_str  => $amount_str,
-            category    => $categorize_rc->( $item ),
+            category    => $category,
             date        => $date,
             epoch       => $epoch,
             item        => $tidy_rc->( $item ),
@@ -1113,26 +1223,51 @@ sub get_billpay_transactions {
 }
 
 sub get_expenditure_report {
-    my ( $self ) = @_;
+    my ( $self, $config_rh ) = @_;
+
+    my ( $from_date, $from_epoch, $to_date, $to_epoch ) = _parse_config(
+        $config_rh,
+        {   from_date  => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
+            from_epoch => qr{\A ( \d+ ) \z}xms,
+            to_date    => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
+            to_epoch   => qr{\A ( \d+ ) \z}xms,
+        }
+    );
+
+    if ( $from_date && !$from_epoch ) {
+
+        $from_epoch = _compute_epoch( $from_date );
+    }
+
+    if ( $to_date && !$to_epoch ) {
+
+        $to_epoch = _compute_epoch( $to_date );
+    }
+
+    $from_epoch ||= 0;
+    $to_epoch   ||= time;
 
     my ( $first_epoch, $last_epoch ) = ( 0, 0 );
 
     my %total_for;
     {
-        my $billpay_ra    = $self->get_billpay_transactions();
-        my $recent_ra     = $self->get_recent_transactions();
-        my $estatement_ra = $self->get_estatement_transactions();
+        my $transaction_ra = $self->get_transactions();
 
-        my $transaction_ra = _merge( $billpay_ra, $recent_ra, $estatement_ra );
-
+        TRANS:
         for my $transaction_rh (@{ $transaction_ra }) {
 
             my $amount   = $transaction_rh->{amount};
             my $category = $transaction_rh->{category};
             my $epoch    = $transaction_rh->{epoch};
 
-            $first_epoch = $epoch;
-            $last_epoch ||= $epoch;
+            next TRANS
+                if $epoch < $from_epoch;
+
+            next TRANS
+                if $to_epoch && $epoch > $to_epoch;
+
+            $first_epoch ||= $epoch;
+            $last_epoch = $epoch;
 
             $total_for{$category} += $amount;
         }
@@ -1169,31 +1304,60 @@ sub get_expenditure_report {
             $monthly_average,
             $weekly_average,
         ];
-     }
+    }
+
     return \@report;
 }
 
 sub get_transaction_schedule {
-    my ( $self ) = @_;
+    my ( $self, $config_rh ) = @_;
+
+    my ( $from_date, $from_epoch, $to_date, $to_epoch ) = _parse_config(
+        $config_rh,
+        {   from_date  => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
+            from_epoch => qr{\A ( \d+ ) \z}xms,
+            to_date    => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
+            to_epoch   => qr{\A ( \d+ ) \z}xms,
+        }
+    );
+
+    if ( $from_date && !$from_epoch ) {
+
+        $from_epoch = _compute_epoch( $from_date );
+    }
+
+    if ( $to_date && !$to_epoch ) {
+
+        $to_epoch = _compute_epoch( $to_date );
+    }
+
+    $from_epoch ||= 0;
+    $to_epoch   ||= time;
+
+    my $tidy_rc = $self->{__tidy_rc} || \&_tidy_item;
 
     my ( $first_epoch, $last_epoch ) = ( 0, 0 );
 
     my %schedule;
     {
-        my $billpay_ra    = $self->get_billpay_transactions();
-        my $recent_ra     = $self->get_recent_transactions();
-        my $estatement_ra = $self->get_estatement_transactions();
+        my $transaction_ra = $self->get_transactions();
 
-        my $transaction_ra = _merge( $billpay_ra, $recent_ra, $estatement_ra );
-
+        TRANS:
         for my $transaction_rh (@{ $transaction_ra }) {
 
             my $amount   = $transaction_rh->{amount};
             my $category = $transaction_rh->{category};
             my $epoch    = $transaction_rh->{epoch};
+            my $item     = $tidy_rc->( $transaction_rh->{item} );
 
-            $first_epoch ||= $epoch;
-            $last_epoch = $epoch;
+            next TRANS
+                if $epoch < $from_epoch;
+
+            next TRANS
+                if $to_epoch && $epoch > $to_epoch;
+
+            $first_epoch = $epoch;
+            $last_epoch ||= $epoch;
 
             my $last_occur_epoch = $schedule{$category}->{last_occur_epoch};
 
@@ -1203,11 +1367,22 @@ sub get_transaction_schedule {
             }
             else {
 
-                $schedule{$category}->{last_occur_epoch} = $epoch;
+                if ( $schedule{$category}->{last_occur_epoch}
+                    && !$schedule{$category}->{interval} )
+                {
+                    $schedule{$category}->{interval}
+                        = ( $schedule{$category}->{last_occur_epoch} - $epoch ) / 86_400;
+                }
+
+                $schedule{$category}->{last_occur_epoch} ||= $epoch;
             }
+
+            my ( $m, $d ) = _formatted_date( $epoch );
 
             $schedule{$category}->{total} += $amount;
             $schedule{$category}->{occurrence_count}++;
+            $schedule{$category}->{day_of_month_rh}->{ int $d }++;
+            $schedule{$category}->{item_rh}->{ lc $item }++;
         }
     }
 
@@ -1221,50 +1396,211 @@ sub get_transaction_schedule {
 
         my $event_rh = $schedule{$category};
 
-        my $count            = $event_rh->{occurrence_count};
-        my $last_epoch       = $event_rh->{last_occur_epoch} || 0;
-        my $next_epoch       = $event_rh->{next_occur_epoch} || 0;
-        my $total            = $event_rh->{total};
+        my $count      = $event_rh->{occurrence_count} || 0;
+        my $last_epoch = $event_rh->{last_occur_epoch} || 0;
+        my $total      = $event_rh->{total} || 0;
+        my $interval   = $event_rh->{interval} || 0;
 
         my $ave_amount   = $total / $count;
         my $ave_interval = sprintf '%d', $days / $count;
         my $monthly_ave  = $total / $months;
         my $weekly_ave   = $total / $weeks;
 
-        my $interval;
+        my $day_of_month_rh = delete $event_rh->{day_of_month_rh};
+
+        DOM:
         {
-            $interval = $next_epoch ? $days / $count : ( time - $last_epoch ) / 86_400;
-            $interval = sprintf '%d', ( $interval < 1 ? $ave_interval : $interval );
-        }
+            my @doms = keys %{ $day_of_month_rh };
 
-        if ($last_epoch) {
+            if ( @doms == 1 ) {
 
-            DAY:
-            for my $i ( 1 .. 364 ) {
+                ( $event_rh->{day_of_month} ) = values %{ $day_of_month_rh };
+            }
+            elsif ( @doms ) {
 
-                $next_epoch = sprintf '%d', $last_epoch + $i * $interval * 86_400;
+                for my $dom (@doms) {
 
-                last DAY
-                    if $next_epoch > time;
+                    if ( $count == $day_of_month_rh->{$dom} ) {
+
+                        $event_rh->{day_of_month} = $dom;
+
+                        last DOM;
+                    }
+                }
+
+                @doms =
+                    map { int $_ }
+                    sort { int $day_of_month_rh->{$b} <=> int $day_of_month_rh->{$a} }
+                    @doms;
+
+                my $range = $doms[0] - $doms[ $#doms ];
+
+                if ( $range < 4 ) {
+
+                    $event_rh->{day_of_month} = $doms[0];
+                }
+                elsif ( $ave_interval > 27 && $ave_interval < 34 ) {
+
+                    my $sum = 0;
+                    map { $sum += $_ } @doms;
+
+                    $event_rh->{day_of_month} = int $sum / ( $#doms + 1 );
+                }
+                else {
+
+                    $event_rh->{day_of_month_ra} = \@doms;
+                }
             }
         }
-        elsif ($next_epoch) {
 
-            $last_epoch = sprintf '%d', $next_epoch - $interval * 86_400;
+        if ( exists $event_rh->{next_occur_epoch} ) {
+
+            $event_rh->{next_occur_date} = _formatted_date( $event_rh->{next_occur_epoch} );
         }
 
-        $event_rh->{next_occur_epoch} = $next_epoch;
-        $event_rh->{next_occur_date}  = _formatted_date($next_epoch);
         $event_rh->{last_occur_epoch} = $last_epoch;
         $event_rh->{last_occur_date}  = _formatted_date($last_epoch);
         $event_rh->{ave_amount}       = $ave_amount;
         $event_rh->{ave_interval}     = $ave_interval;
-        $event_rh->{interval}         = $interval;
+        $event_rh->{interval}         = int $interval;
         $event_rh->{monthly_ave}      = $monthly_ave;
         $event_rh->{weekly_ave}       = $weekly_ave;
     }
 
     return \%schedule;
+}
+
+sub get_future_transactions {
+    my ( $self, $config_rh ) = @_;
+
+    my ( $from_date, $from_epoch, $schedule_rh, $to_date, $to_epoch ) = _parse_config(
+        $config_rh,
+        {   from_date   => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
+            from_epoch  => qr{\A ( \d+ ) \z}xms,
+            schedule_rh => {},
+            to_date     => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
+            to_epoch    => qr{\A ( \d+ ) \z}xms,
+        }
+    );
+
+    if ( $from_date && !$from_epoch ) {
+
+        $from_epoch = _compute_epoch( $from_date );
+    }
+
+    if ( $to_date && !$to_epoch ) {
+
+        $to_epoch = _compute_epoch( $to_date );
+    }
+
+    $from_epoch ||= 0;
+    $to_epoch   ||= time + ( 365 * 86_400 );
+
+    croak "no schedule data given"
+        if not keys %{ $schedule_rh };
+
+    my $transaction_ra = $self->get_transactions();
+
+    my %last_occur_for;
+
+    CAT:
+    for my $category (keys %{ $schedule_rh }) {
+
+        TRANS:
+        for my $transaction_rh (@{ $transaction_ra }) {
+
+            my $epoch  = $transaction_rh->{epoch};
+            my $status = lc $transaction_rh->{status};
+
+            next TRANS
+                if $category ne $transaction_rh->{category};
+
+            next TRANS
+                if $status ne 'confirmed' && $status ne 'pending';
+
+            if ( $epoch > $from_epoch && $status eq 'confirmed' ) {
+
+                $from_epoch = $epoch;
+            }
+
+            $last_occur_for{$category} = $epoch;
+
+            next CAT;
+        }
+    }
+
+    my @transactions;
+
+    CAT:
+    for my $category (keys %{ $schedule_rh }) {
+
+        my $event_rh = $schedule_rh->{$category};
+
+        my $day_of_month     = $event_rh->{day_of_month};
+        my $amount           = $event_rh->{amount} || $event_rh->{ave_amount};
+        my $interval         = $event_rh->{interval} || $event_rh->{ave_interval};
+        my $last_occur_epoch = $event_rh->{last_occur_epoch} || $last_occur_for{$category};
+        my $item             = ucfirst lc $category;
+
+        _as_cents( \$amount );
+
+        my $amount_str = $amount;
+
+        _as_dollars( \$amount_str );
+
+        my $epoch = $last_occur_epoch;
+
+        DAY:
+        while ( $epoch <= $to_epoch ) {
+
+            $epoch += 86_400;
+
+            next DAY
+                if $epoch < $from_epoch;
+
+            my $days_elapsed = ( $epoch - $last_occur_epoch ) / 86_400;
+            my $since        = _formatted_date( $last_occur_epoch );
+
+            if ( $day_of_month ) {
+
+                my ( $m, $d ) = _formatted_date( $epoch );
+
+                next DAY
+                    if $d != $day_of_month;
+
+                next DAY
+                    if $days_elapsed < 25;
+            }
+            elsif ( $interval ) {
+
+                next DAY
+                    if $days_elapsed < $interval;
+            }
+            else {
+
+                croak 'no interval of day_of_month', Dumper( $event_rh );
+            }
+
+            $last_occur_epoch = $epoch;
+
+            my $date = _formatted_date( $epoch );
+
+            my %transaction = (
+                amount      => $amount,
+                amount_str  => $amount_str,
+                category    => $category,
+                date        => $date,
+                epoch       => $epoch,
+                item        => "$item ($days_elapsed days since $since)",
+                status      => 'predicted',
+            );
+            push @transactions, \%transaction;
+        }
+    }
+
+    @transactions = sort { $b->{epoch} <=> $a->{epoch} } ( @transactions, @{ $transaction_ra } );
+
+    return _merge( \@transactions );
 }
 
 1;
@@ -1402,7 +1738,7 @@ financial data in plain text and you should choose it carefully.
 =item tidy_rc
 
 This is a code reference for the function that you'd like to use for
-tidying up the transaction labels. The transaction lable will be passed
+tidying up the transaction labels. The transaction label will be passed
 as a string and the tidied version should be returned. If not given
 then the default tidy function is used which is optimal for the
 author's purposes.
@@ -1411,9 +1747,10 @@ author's purposes.
 
 This is a code reference for the function that you'd like to use for
 determining which category label applies for a given transaction label.
-The transaction label will be passed as a string and the category label
-should be returned, or some sensible default category such
-as 'uncategorized'. If not given then the default tidy function is used
+The transaction label and the transaction amount (in cents) will be passed
+in as arguemnts and the category label should be returned as a string.
+If no category is identified then the function ought to return something
+like 'uncategorized'.  If not given then the default tidy function is used
 which is optimal for the author's purposes.
 
 =item error_level
@@ -1463,6 +1800,159 @@ transaction.
 This analyzes all the accessible transaction data and computes stats on the
 amount spent on the various categories (as determined by the categorize_rc
 function).
+
+Accepts a configuration hash ref with two keys:
+
+=over
+
+=item *
+
+from_date -- Date to start expenditure analysis (MM/DD/YYYY).
+
+=item *
+
+to_date -- Date to terminate expenditure analysis (MM/DD/YYYY).
+
+=back
+
+Example:
+
+  my %dates = (
+      from_date => '04/03/2011',
+      to_date   => '07/03/2011',
+  );
+  my $report_ra = $nfcu->get_expenditure_report( \%dates );
+
+  print "Expenditure Report:\n";
+
+  my $tb = Text::Table->new( @{ shift @{ $report_ra } } );
+  $tb->load( @{ $report_ra } );
+
+  print "\n$tb\n\n";
+
+You may also pass dates in epoch values with they keys from_epoch, to_epoch.
+
+  my %dates = (
+      from_epoch => 0,
+      to_epoch   => time,
+  );
+  my $report_ra = $nfcu->get_expenditure_report( \%dates );
+
+=item get_transaction_schedule
+
+This function analyzes your expenditures and composes a hash of categories and
+the apparent schedule of transaction activity. This could be useful in making
+predictions about future spending habits.
+
+The output may look something like this:
+
+  {
+      'groceries' => {
+          'ave_amount'       => '-5083.95',
+          'ave_interval'     => '4',
+          'day_of_month'     => 11,
+          'interval'         => 6,
+          'item_rh' => {
+              'vons spring valley ca'                => 1,
+              'vons san diego ca'                    => 1,
+              'vons store 2118 san diego'            => 1,
+              'vons chula visa ca'                   => 1,
+              'seafood city market. national cit ca' => 1,
+              '0124 henrys la mesa ca'               => 2,
+              'vons la mesa ca'                      => 1,
+          },
+          'last_occur_date'  => '07/03/2011',
+          'last_occur_epoch' => 1309676400,
+          'monthly_ave'      => '-33893',
+          'occurrence_count' => 20,
+          'total'            => -101679,
+          'weekly_ave'       => '-7908.36666666667',
+      },
+      'housing' => {
+          'ave_amount'       => '-252023',
+          'ave_interval'     => '30',
+          'day_of_month'     => 1,
+          'interval'         => 30,
+          'item_rh' => {
+              'bac home loans online pmt'   => 1,
+              'bachomeloansvclp online pmt' => 1,
+              'bank of america online pmt'  => 1
+          },
+          'last_occur_date'  => '07/01/2011',
+          'last_occur_epoch' => 1309503600,
+          'monthly_ave'      => '-252023',
+          'occurrence_count' => 3,
+          'total'            => -396069,
+          'weekly_ave'       => '-30805.3666666667',
+      },
+  }
+
+This result indicates grocery and housing payments made
+over a three month period. The program doesn't know the difference
+between a regularly scheduled expense (such as housing) vs.
+a not-so regular expense like groceries. So it's up to you to
+decide the difference as indicated in keys like 'day_of_month'
+and 'ave_interval'.
+
+Accepts an optional configuration hash ref with two keys:
+
+=item get_future_transactions
+
+Projects future expenditures by extrapolating from current transaction
+history according to the given transaction schedule. The schedule is
+a hash of categories (as defined by the categorize function).
+
+Example:
+
+  my %schedule = (
+      'income' => {
+          interval => 14,
+          amount   => 50000,           # cents
+      },
+      'housing' => {
+          'ave_amount'   => '-250000', # cents
+          'day_of_month' => 1,
+      },
+      'groceries' => {
+          'interval'   => 13,
+          'ave_amount' => '$50.95-',   # dollars
+      },
+  );
+  my $transaction_ra = $nfcu->get_future_transactions( \%schedule );
+
+The frequency description must be either a day_of_month or an interval key.
+You might use the result of the get_transaction_schedule function as a basis
+for this schedule. But you'll need to clean it up because the generated
+schedule is the result of some guess-work. Maybe in a future release ...e
+
+=over
+
+=item *
+
+from_date -- Date to start expenditure analysis (MM/DD/YYYY).
+
+=item *
+
+to_date -- Date to terminate expenditure analysis (MM/DD/YYYY).
+
+=back
+
+Example:
+
+  my %dates = (
+      from_date => '04/03/2011',
+      to_date   => '07/03/2011',
+  );
+  my $schedule_rh = $nfcu->get_transaction_schedule( \%dates );
+
+You may also pass dates in epoch values with they keys from_epoch, to_epoch.
+
+  # this is the default if the date hash is not given.
+  my %dates = (
+      from_epoch => 0,
+      to_epoch   => time,
+  );
+  my $schedule_rh = $nfcu->get_transaction_schedule( \%dates );
 
 =back
 
