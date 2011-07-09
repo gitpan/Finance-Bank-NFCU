@@ -4,3 +4,4 @@ MANIFEST
 README
 t/Finance-Bank-NFCU.t
 lib/Finance/Bank/NFCU.pm
+example/example_nfcu.pl

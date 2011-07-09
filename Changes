@@ -1,5 +1,10 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.04  Sat Jul 09 11:29:40 2011
+    - bug fix in the default categorize function
+    - updated POD
+    - added example program
+
 0.03  Mon Jul 04 13:22:25 2011
     - added new methods:
         get_transaction_schedule

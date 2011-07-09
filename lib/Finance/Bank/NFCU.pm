@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.03;
+our $VERSION = 0.04;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_ROW_REGEX, $PAYMENT_REGEX,
     $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX, $ESTATEMENT_PERIOD_REGEX, $TIME_ZONE );
@@ -489,14 +489,13 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
 
             %criterion_for = (
                 'administrative' => [
-                    [ qr{ (?: \b | \s ) transfer \s }xmsi, ],
                     [ qr{ \b dividend \b }xmsi, ],
                 ],
                 'health' => [
                     [ qr{ \s pharmacy \s }xmsi, ],
                 ],
                 'charity' => [
-                    [ qr{ \W democrats \W }xmsi, ],
+                    [ qr{ \s democrats \s }xmsi, ],
                     [ qr{ \s cancer \s }xmsi, ],
                     [ qr{ \s moveon[.]org \s }xmsi, ],
                     [ qr{ \s komen \s }xmsi, ],
@@ -510,6 +509,7 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
                 ],
                 'gasoline' => [
                     [ qr{ \s shell \s service }xmsi, ],
+                    [ qr{ \s exxon (?: mobile )? \s }xmsi, ],
                     [ qr{ \s oil \s }xmsi, ],
                     [ qr{ \s arco \W }xmsi, ],
                     [ qr{ \s costco \s gas \s }xmsi, ],
@@ -523,7 +523,7 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
                     [ qr{ \s all \W* state \s }xmsi, ],
                 ],
                 'education' => [
-                    [ qr{ \s u[.]s[.] \s dept[.] \s of \s ed \s }xmsi, ],
+                    [ qr{ \s u[.]s[.] \s dep(?: t[.] | artment ) \s of \s ed }xmsi, ],
                     [ qr{ \s sdccd \s }xmsi, ],
                     [ qr{ \s college \s }xmsi, ],
                 ],
@@ -615,8 +615,10 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
 
                 if ( $range_ra ) {
 
+                    my ( $min, $max ) = sort { $a <=> $b } @{ $range_ra };
+
                     next CRIT
-                        if $range_ra->[1] < $amount || $amount < $range_ra->[0];
+                        if $amount < $min || $max < $amount;
                 }
 
                 return $category
@@ -931,6 +933,9 @@ sub get_recent_transactions {
 
         my $category = $categorize_rc->( $item, $amount );
 
+        croak "categorize function didn't return a category for: $item ($amount)"
+            if !defined $category;
+
         my %transaction = (
             amount      => $amount,
             amount_str  => $amount_str,
@@ -1075,6 +1080,9 @@ sub get_estatement_transactions {
 
             my $category = $categorize_rc->( $item, $amount );
 
+            croak "categorize function didn't return a category for: $item ($amount)"
+                if !defined $category;
+
             my %transaction = (
                 amount      => $amount,
                 amount_str  => $amount_str,
@@ -1206,6 +1214,9 @@ sub get_billpay_transactions {
         }
 
         my $category = $categorize_rc->( $item, $amount );
+
+        croak "categorize function didn't return a category for: $item ($amount)"
+            if !defined $category;
 
         my %transaction = (
             amount      => $amount,
@@ -1737,21 +1748,62 @@ financial data in plain text and you should choose it carefully.
 
 =item tidy_rc
 
-This is a code reference for the function that you'd like to use for
-tidying up the transaction labels. The transaction label will be passed
-as a string and the tidied version should be returned. If not given
-then the default tidy function is used which is optimal for the
+This is a code reference for the callback function that you'd like
+to use for tidying up the transaction labels. The transaction label
+will be passed as a string and the tidied version should be returned.
+If not given then the default tidy function is used which is optimal for the
 author's purposes.
 
 =item categorize_rc
 
-This is a code reference for the function that you'd like to use for
-determining which category label applies for a given transaction label.
-The transaction label and the transaction amount (in cents) will be passed
-in as arguemnts and the category label should be returned as a string.
+This is a code reference for the callback function that you'd like to use for
+determining which category label applies for a given transaction description.
+
+The categorize callback receives two arguments:
+
+=over
+
+=item *
+
+the transaction description
+
+=item *
+
+the transaction amount (positive or negative) in cents.
+
+=back
+
 If no category is identified then the function ought to return something
-like 'uncategorized'.  If not given then the default tidy function is used
-which is optimal for the author's purposes.
+like 'uncategorized'. If undef is returned as a category then this module
+will croak. (You could do that on purpose to help identify transactions which
+are failing to be properly categorized.)
+
+The categorize function ought to recognize a payment in varied formats.
+
+For example my trash collection payments:
+
+=over
+
+=item eStatement format
+
+  Paid To - Nationwideallied Online Pmt Chk 6410085
+
+=item recent transactions format
+
+  ACH Transaction - NATIONWIDEALLIED ONLINE PMT
+
+=item billpay format
+
+  Allied Waste
+
+=back
+
+If no categorize_rc is given then the default categorize function is used which
+is not likely to be exactly what you need. A good categorize function is essential
+because there are several functions which operate by consolidating all the known
+transaction data to get a complete history. If the categorize function doesn't
+correctly resolve to a consistent category then there will be discrepencies for
+cases where there is overlap.
 
 =item error_level
 
@@ -1759,9 +1811,8 @@ As the transactions are read from the web content they're validated for
 accuracy by double checking the amounts and their affects on the balance.
 If the math doesn't work out between two adjacent transactions then this
 module will emit a warning. Set this config parameter to 'fatal' to
-upgrade this situation to a fatal error. Although the author considers
-this possibility to be unlikely, you might want to run this in fatal mode
-just to be certain.
+upgrade this situation to a fatal error. This situation is unlikely if
+you've written a thorough categorize function. (See categorize_rc above.)
 
 =back
 
@@ -1896,35 +1947,6 @@ and 'ave_interval'.
 
 Accepts an optional configuration hash ref with two keys:
 
-=item get_future_transactions
-
-Projects future expenditures by extrapolating from current transaction
-history according to the given transaction schedule. The schedule is
-a hash of categories (as defined by the categorize function).
-
-Example:
-
-  my %schedule = (
-      'income' => {
-          interval => 14,
-          amount   => 50000,           # cents
-      },
-      'housing' => {
-          'ave_amount'   => '-250000', # cents
-          'day_of_month' => 1,
-      },
-      'groceries' => {
-          'interval'   => 13,
-          'ave_amount' => '$50.95-',   # dollars
-      },
-  );
-  my $transaction_ra = $nfcu->get_future_transactions( \%schedule );
-
-The frequency description must be either a day_of_month or an interval key.
-You might use the result of the get_transaction_schedule function as a basis
-for this schedule. But you'll need to clean it up because the generated
-schedule is the result of some guess-work. Maybe in a future release ...e
-
 =over
 
 =item *
@@ -1953,6 +1975,36 @@ You may also pass dates in epoch values with they keys from_epoch, to_epoch.
       to_epoch   => time,
   );
   my $schedule_rh = $nfcu->get_transaction_schedule( \%dates );
+
+
+=item get_future_transactions
+
+Projects future expenditures by extrapolating from current transaction
+history according to the given transaction schedule. The schedule is
+a hash of categories (as defined by the categorize function).
+
+Example:
+
+  my %schedule = (
+      'income' => {
+          interval => 14,
+          amount   => 50000,           # cents
+      },
+      'housing' => {
+          'ave_amount'   => '-250000', # cents
+          'day_of_month' => 1,
+      },
+      'groceries' => {
+          'interval'   => 13,
+          'ave_amount' => '$50.95-',   # dollars
+      },
+  );
+  my $transaction_ra = $nfcu->get_future_transactions( \%schedule );
+
+The frequency description must be either a day_of_month or an interval key.
+You might use the result of the get_transaction_schedule function as a basis
+for this schedule. But you'll need to clean it up because the generated
+schedule is the result of some guess-work. Maybe in a future release ...
 
 =back
 
