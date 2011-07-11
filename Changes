@@ -1,5 +1,8 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.05  Sun Jul 10 22:57:42 2011
+    - fix excluded pending transactions in get_transactions result
+
 0.04  Sat Jul 09 11:29:40 2011
     - bug fix in the default categorize function
     - updated POD

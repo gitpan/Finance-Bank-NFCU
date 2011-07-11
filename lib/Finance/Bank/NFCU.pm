@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.04;
+our $VERSION = 0.05;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_ROW_REGEX, $PAYMENT_REGEX,
     $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX, $ESTATEMENT_PERIOD_REGEX, $TIME_ZONE );
@@ -90,7 +90,7 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
     $Carp::Internal{ (__PACKAGE__) }++;
 
     my $error_level = 'non-fatal';
-    my $now = time;
+    my $now         = time;
     my ( %epoch_for, %date_for, %criterion_for, %item_for );
 
     sub _set_error_level {
@@ -310,9 +310,12 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
                     my $status     = lc $transaction_rh->{status};
 
                     # overlap
-                    next TRANS
-                        if $epoch < $last_epoch
-                            && $status ne 'predicted';
+                    if (   $epoch < $last_epoch
+                        && $status ne 'predicted'
+                        && $status ne 'pending' )
+                    {
+                        next TRANS;
+                    }
 
                     if ( $status ne 'confirmed' ) {
 
@@ -387,7 +390,7 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
         my $epoch = defined $_[0] ? $_[0] : $now;
 
         my $context = wantarray ? 'list' : 'scalar';
-        my $key = "$epoch/$context";
+        my $key     = "$epoch/$context";
 
         if ( exists $date_for{$key} ) {
 
@@ -864,7 +867,7 @@ sub get_recent_transactions {
 
     $account    ||= 'EveryDay Checking';
     $from_epoch ||= 0;
-    $to_epoch   ||= time;
+    $to_epoch   ||= time + 7 * 86_400;
 
     my $cache_dir     = $self->{__cache_dir};
     my $categorize_rc = $self->{__categorize_rc} || \&_categorize;
@@ -1256,7 +1259,7 @@ sub get_expenditure_report {
     }
 
     $from_epoch ||= 0;
-    $to_epoch   ||= time;
+    $to_epoch   ||= time + 7 * 86_400;
 
     my ( $first_epoch, $last_epoch ) = ( 0, 0 );
 
@@ -1343,7 +1346,7 @@ sub get_transaction_schedule {
     }
 
     $from_epoch ||= 0;
-    $to_epoch   ||= time;
+    $to_epoch   ||= time + 7 * 86_400;
 
     my $tidy_rc = $self->{__tidy_rc} || \&_tidy_item;
 
