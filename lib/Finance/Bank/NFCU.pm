@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.05;
+our $VERSION = 0.06;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_ROW_REGEX, $PAYMENT_REGEX,
     $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX, $ESTATEMENT_PERIOD_REGEX, $TIME_ZONE );
@@ -196,7 +196,9 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
                 $dollars = scalar reverse $dollars;
             }
 
-            ${$rs} = sprintf '$%s.%02u%s', $dollars, ( substr $cents . '00', 0, 2 ), ( $is_negative ? '-' : "" );
+            ${$rs} = sprintf '$%s.%02u%s', $dollars,
+                ( substr $cents . '00', 0, 2 ),
+                ( $is_negative ? '-' : "" );
         }
         return;
     }
@@ -307,7 +309,7 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
 
                     my $last_epoch = $last_transaction_rh->{epoch};
                     my $epoch      = $transaction_rh->{epoch};
-                    my $status     = lc $transaction_rh->{status};
+                    my $status     = $transaction_rh->{status};
 
                     # overlap
                     if (   $epoch < $last_epoch
@@ -417,8 +419,13 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
     sub _compute_epoch {
         my ( $date, $default_epoch ) = @_;
 
-        return $default_epoch
-            if !$date;
+        if ( !$date ) {
+
+            return $default_epoch
+                if defined $default_epoch;
+
+            $date = _formatted_date();
+        }
 
         return $epoch_for{$date}
             if exists $epoch_for{$date};
@@ -916,9 +923,10 @@ sub get_recent_transactions {
             if !@data;
 
         $data[0] =~ s{<[^>]+>}{}xmsg;
+        $data[0] =~ tr/A-Z/a-z/;
 
-        my $status = $data[0] eq 'Pending' ? 'Pending'         : 'Confirmed';
-        my $date   = $data[0] eq 'Pending' ? _formatted_date() : $data[0];
+        my $status = $data[0] eq 'pending' ? 'pending'         : 'confirmed';
+        my $date   = $data[0] eq 'pending' ? _formatted_date() : $data[0];
         my $item   = $data[1];
         my $amount_str  = $data[2];
         my $balance_str = $data[3];
@@ -1095,7 +1103,7 @@ sub get_estatement_transactions {
                 date        => $date,
                 epoch       => $epoch,
                 item        => $tidy_rc->($item),
-                status      => 'Confirmed',
+                status      => 'confirmed',
             );
             push @transactions, \%transaction;
         }
@@ -1543,6 +1551,8 @@ sub get_future_transactions {
         }
     }
 
+    my $today = _compute_epoch();
+
     my @transactions;
 
     CAT:
@@ -1593,6 +1603,11 @@ sub get_future_transactions {
             else {
 
                 croak 'no interval of day_of_month', Dumper( $event_rh );
+            }
+
+            while ( $epoch < $today ) {
+
+                $epoch += 86_400;
             }
 
             $last_occur_epoch = $epoch;
@@ -1837,7 +1852,7 @@ from the eStatement section and includes all available history.
 =item get_billpay_transactions
 
 Returns an array ref of transaction hash refs. The transactions are drawn
-from the billpay section of the website and includes Pending status
+from the billpay section of the website and includes pending status
 transactions.
 
 =item get_transactions

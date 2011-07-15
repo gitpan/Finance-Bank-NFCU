@@ -1,5 +1,10 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.06  Thu Jul 15 15:07:02 2011
+    - predicted transactions cannot occur in the past
+    - transaction status strings are all lower case
+    - improved example program
+
 0.05  Sun Jul 10 22:57:42 2011
     - fix excluded pending transactions in get_transactions result
 
