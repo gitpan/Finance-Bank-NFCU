@@ -117,6 +117,7 @@ sub categorize {
         'gasoline' => [
             [ qr{ \s shell \s service }xmsi, ],
             [ qr{ \s exxon (?: mobile )? \s }xmsi, ],
+            [ qr{ \s petroleum \s }xmsi, ],
             [ qr{ \s oil \s }xmsi, ],
             [ qr{ \s arco \W }xmsi, ],
             [ qr{ \s costco \s gas \s }xmsi, ],

@@ -1,5 +1,10 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.07  Thu Jul 22 20:4304 2011
+    - bug fix for predicting time since last occurance when there is no last occurance
+    - bug fix in parsing multi-line transactions on eStatements
+    - improved message on transaction audit discrepency
+
 0.06  Thu Jul 15 15:07:02 2011
     - predicted transactions cannot occur in the past
     - transaction status strings are all lower case

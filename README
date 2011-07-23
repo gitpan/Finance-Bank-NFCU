@@ -1,4 +1,4 @@
-Finance-Bank-NFCU version 0.06
+Finance-Bank-NFCU version 0.07
 ==============================
 
 WARNING: This module is designed to interact with your online
@@ -8,7 +8,12 @@ expected to audit the code yourself to be sure that the
 security, accuracy and quality is up to your expectations.
 
 The author cannot assume responsibility for any untoward or
-nefarious activities attempted with this software.
+nefarious activities attempted with this software. Your bank
+account is as secure as your password.
+
+Check out the example program:
+
+  example/example_nfcu.pl
 
 INSTALLATION
 

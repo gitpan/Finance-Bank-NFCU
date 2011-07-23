@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.06;
+our $VERSION = 0.07;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_ROW_REGEX, $PAYMENT_REGEX,
     $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX, $ESTATEMENT_PERIOD_REGEX, $TIME_ZONE );
@@ -55,7 +55,7 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
     }xms;
 
     Readonly $ESTATEMENT_ROW_REGEX => qr{
-        ( \d+ - \d+ .+? \d+ [.] \d{2} ) \n
+        ( \d+ - \d+ .+? \d+ [.] \d{2} ) \n ( [ ]{6} [^\n]+ )?
     }xms;
 
     #   STATEMENT PERIOD
@@ -362,21 +362,31 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
 
         my $balance = $transaction_ra->[0]->{balance};
 
-        for my $transaction_rh ( @{$transaction_ra} ) {
+        for my $i ( 0 .. $#{$transaction_ra} ) {
+
+            my $transaction_rh = $transaction_ra->[$i];
 
             my $balance_str          = sprintf '%0.2f', $balance;
             my $expected_balance_str = sprintf '%0.2f', $transaction_rh->{balance};
 
             if ( $balance_str != $expected_balance_str ) {
 
+                my $from_i = $i > 2                         ? $i - 3 : 0;
+                my $to_i   = $i < $#{ $transaction_ra } - 2 ? $i + 3 : $#{ $transaction_ra };
+
+                my $snippet = Dumper( [ @{ $transaction_ra }[ $from_i .. $to_i ] ] );
+                $snippet =~ s/\A .+? ( \s* [{] ) /$1/xms;
+                $snippet =~ s/ [}] [^}]+? \z/}/xms;
+
                 my $message =
-                    sprintf 'transaction discrepancy (%s != %s) at: %s%s',
+                    sprintf "transaction discrepancy '%s' (%s != %s) in:\n...%s\n...\n%s\n",
+                            $transaction_rh->{item},
                             $balance_str,
                             $expected_balance_str,
-                            Dumper( $transaction_rh ),
-                            Dumper( $transaction_ra );
+                            $snippet,
+                            "Perhaps your categorize function need improvement.";
 
-                die $message
+                croak $message
                     if $error_level eq 'fatal';
 
                 warn $message;
@@ -1069,7 +1079,7 @@ sub get_estatement_transactions {
         ROW:
         while ( $body =~ m{ $ESTATEMENT_ROW_REGEX }xmsg ) {
 
-            my $row = $1;
+            my ( $row, $item_line2 ) = ( $1, $2 );
 
             $row =~ s{ \n \s* }{ }xmsg;
 
@@ -1079,6 +1089,14 @@ sub get_estatement_transactions {
             my ( $month_day_item, $amount_str, $balance_str ) = split /\s{3,}/, $row;
 
             my ( $month, $day, $item ) = $month_day_item =~ m{\A ( \d+ )-( \d+ ) \s ( .+ ) }xms;
+
+            if ( $item_line2 ) {
+
+                $item .= $item_line2;
+            }
+
+            $item =~ s{ \s+ }{ }xmsg;
+            $item =~ s{(?: \A \s* | \s* \z )}{}xmsg;
 
             my $date = sprintf '%0.2d/%0.2d/%d', $month, $day, $year_for{$month};
             my $epoch = _compute_epoch($date);
@@ -1582,8 +1600,7 @@ sub get_future_transactions {
             next DAY
                 if $epoch < $from_epoch;
 
-            my $days_elapsed = ( $epoch - $last_occur_epoch ) / 86_400;
-            my $since        = _formatted_date( $last_occur_epoch );
+            my $days_elapsed = 0;
 
             if ( $day_of_month ) {
 
@@ -1592,10 +1609,28 @@ sub get_future_transactions {
                 next DAY
                     if $d != $day_of_month;
 
+                if ( $last_occur_epoch ) {
+
+                    $days_elapsed = ( $epoch - $last_occur_epoch ) / 86_400;
+                }
+                else {
+
+                    $days_elapsed = 30;
+                }
+
                 next DAY
                     if $days_elapsed < 25;
             }
             elsif ( $interval ) {
+
+                if ( $last_occur_epoch ) {
+
+                    $days_elapsed = ( $epoch - $last_occur_epoch ) / 86_400;
+                }
+                else {
+
+                    $days_elapsed = $interval;
+                }
 
                 next DAY
                     if $days_elapsed < $interval;
@@ -1610,9 +1645,15 @@ sub get_future_transactions {
                 $epoch += 86_400;
             }
 
-            $last_occur_epoch = $epoch;
-
             my $date = _formatted_date( $epoch );
+
+            my $since_tag
+                = $last_occur_epoch
+                ? ( sprintf ' (%d days since %s)',
+                    $days_elapsed,
+                    "" . _formatted_date( $last_occur_epoch )
+                  )
+                : ' (no prior occurrences)';
 
             my %transaction = (
                 amount      => $amount,
@@ -1620,10 +1661,12 @@ sub get_future_transactions {
                 category    => $category,
                 date        => $date,
                 epoch       => $epoch,
-                item        => "$item ($days_elapsed days since $since)",
+                item        => "$item$since_tag",
                 status      => 'predicted',
             );
             push @transactions, \%transaction;
+
+            $last_occur_epoch = $epoch;
         }
     }
 
@@ -1821,7 +1864,8 @@ is not likely to be exactly what you need. A good categorize function is essenti
 because there are several functions which operate by consolidating all the known
 transaction data to get a complete history. If the categorize function doesn't
 correctly resolve to a consistent category then there will be discrepencies for
-cases where there is overlap.
+cases where there is overlap. This overlap will be evident by warning or die
+messages like "transaction discrepancy ...".
 
 =item error_level
 
