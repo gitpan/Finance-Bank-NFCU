@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.07;
+our $VERSION = 0.08;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_ROW_REGEX, $PAYMENT_REGEX,
     $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX, $ESTATEMENT_PERIOD_REGEX, $TIME_ZONE );
@@ -38,11 +38,13 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
     }xms;
 
     Readonly $ACCT_SUMMARY_REGEX => qr{
-      <tr \s id="accountTable \w+ ">                                \s*
-        <td \s class="tdText">         \s* ( [^<]+? ) \s* </td>     \s*
-        <td \s class="tdText"><a \s href=" ( [^"]+? ) ">
-                                       \s* ( [^<]+? ) \s* </a></td> \s*
-        <td \s class="tdAmt">          \s* ( [^<]+? ) \s* </td>     \s*
+      <tr \s id \s* = \s* "accountTable \w+ ">                         \s*
+        <td \s class \s* = \s* "tdText" \s* > \s* ( [^<]+? ) \s* </td> \s*
+        <td \s class \s* = \s* "tdText" \s* >                          \s*
+            <a .+? href=" ( [^"]+? ) " \s* >  \s* ( [^<]+? ) \s* </a>  \s*
+            <a [^>]+ > .+? </a>                                        \s*
+        </td>                                                          \s*
+        <td \s class \s* = \s* "tdAmt" \s* >  \s* ( [^<]+? ) \s* </td> \s*
       </tr>
     }xms;
 

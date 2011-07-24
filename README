@@ -1,4 +1,4 @@
-Finance-Bank-NFCU version 0.07
+Finance-Bank-NFCU version 0.08
 ==============================
 
 WARNING: This module is designed to interact with your online
@@ -36,6 +36,13 @@ This module requires these other modules and libraries:
   File::Spec
   Readonly
   WWW::Mechanize
+
+The example program requires:
+
+  IO::Prompt
+  Text::Table
+  Term::ANSIColor::Print
+
 
 COPYRIGHT AND LICENCE
 

@@ -13,7 +13,6 @@ my ( $access_number, $user_id, $password );
 {
     $access_number = prompt( -integer => 'Account: ' );
     $user_id       = prompt( -integer => 'User ID: ' );
-    local $SIG{__WARN__} = sub { return; };
     $password      = prompt( 'Password: ', -echo => '*' );
 }
 
