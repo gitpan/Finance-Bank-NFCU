@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.08;
+our $VERSION = 0.09;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_ROW_REGEX, $PAYMENT_REGEX,
     $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX, $ESTATEMENT_PERIOD_REGEX, $TIME_ZONE );
@@ -176,13 +176,22 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
         return $m->{epoch} <=> $n->{epoch}
             if $m->{epoch} != $n->{epoch};
 
-        return -1
-            if $m->{balance} + $n->{amount} == $n->{balance};
+        if ( exists $m->{balance} && exists $n->{balance} ) {
 
-        return 1
-            if $n->{balance} + $m->{amount} == $m->{balance};
+            return -1
+                if $m->{balance} + $n->{amount} == $n->{balance};
 
-        return $n->{_sequence} <=> $m->{_sequence};
+            return 1
+                if $n->{balance} + $m->{amount} == $m->{balance};
+        }
+
+        return $n->{_sequence} <=> $m->{_sequence}
+            if exists $m->{_sequence} && exists $n->{_sequence};
+
+        return $n->{_list_number} <=> $m->{_list_number}
+            if exists $m->{_list_number} && exists $n->{_list_number};
+
+        return 0;
     }
 
     sub _as_dollars {
@@ -282,71 +291,101 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
         return ( $dollars, $cents, $is_negative );
     }
 
+    sub _lookahead {
+        my ( $seek_rh ) = @_;
+
+        my $epoch       = $seek_rh->{epoch};
+        my $amount      = $seek_rh->{amount};
+        my $category    = $seek_rh->{category};
+        my $list_ra     = $seek_rh->{list_ra};
+        my $list_number = $seek_rh->{list_number};
+
+        LIST:
+        for my $i ( 0 .. $#{ $list_ra } ) {
+
+            for my $transaction_rh (@{ $list_ra->[$i] }) {
+
+                next LIST
+                    if $transaction_rh->{_list_number} == $list_number;
+
+                next LIST
+                    if $transaction_rh->{epoch} < $epoch;
+
+                my $amt_cat = join ',', @{ $transaction_rh }{qw( amount category )};
+
+                return 1
+                    if "$amount,$category" eq $amt_cat;
+            }
+        }
+
+        return;
+    }
+
     sub _merge {
         my @transaction_lists = @_;
 
+        my ( @master, @merger );
+
         my $list_number = 1;
-
-        my %is_seen;
-
-        my @merger;
 
         for my $transaction_ra ( reverse @transaction_lists ) {
 
-            TRANS:
-            for my $transaction_rh ( reverse @{ $transaction_ra } ) {
-
-                my $key = join ',', @{ $transaction_rh }{qw( epoch amount category )};
-
-                my $item = $transaction_rh->{item};
-
-                next TRANS
-                    if $is_seen{$key} && $list_number ne $is_seen{$key};
-
-                $is_seen{$key} = $list_number;
-
-                if ( @merger ) {
-
-                    my $last_transaction_rh = $merger[0];
-
-                    my $last_epoch = $last_transaction_rh->{epoch};
-                    my $epoch      = $transaction_rh->{epoch};
-                    my $status     = $transaction_rh->{status};
-
-                    # overlap
-                    if (   $epoch < $last_epoch
-                        && $status ne 'predicted'
-                        && $status ne 'pending' )
-                    {
-                        next TRANS;
-                    }
-
-                    if ( $status ne 'confirmed' ) {
-
-                        my $balance = $last_transaction_rh->{balance};
-                        my $amount  = $transaction_rh->{amount};
-
-                        die "no balance found:", Dumper( $last_transaction_rh )
-                            if not defined $balance;
-
-                        $balance += $amount;
-
-                        $transaction_rh->{balance}     = $balance;
-                        $transaction_rh->{balance_str} = $balance;
-
-                        _as_dollars( \$transaction_rh->{balance_str} );
-                    }
-                }
+            for my $transaction_rh ( reverse @{ $transaction_ra || [] } ) {
 
                 $transaction_rh->{_list_number} = $list_number;
 
-                unshift @merger, $transaction_rh;
+                push @master, $transaction_rh;
             }
 
             $list_number++;
         }
 
-        map { delete $_->{_list_number} } @merger;
+        @master = sort { _trans_cmp( $a, $b ) } @master;
+
+        my %is_seen;
+
+        TRANS:
+        for my $transaction_rh (@master) {
+
+            my ( $epoch, $status, $item, $amount, $category, $list_number )
+                = @{$transaction_rh}{qw( epoch status item amount category _list_number )};
+
+            my $key = sprintf '%s,%s,%s', $epoch, $amount, $category;
+
+            next TRANS
+                if $is_seen{$key} && $is_seen{$key} ne $list_number;
+
+            if ( @merger && $status ne 'confirmed' ) {
+
+                my %seek = (
+                    epoch       => $epoch,
+                    amount      => $amount,
+                    category    => $category,
+                    list_number => $list_number,
+                    list_ra     => \@transaction_lists
+                );
+                next TRANS
+                    if _lookahead( \%seek ); # prevent overlap
+
+                my $last_transaction_rh = $merger[0];
+
+                my $balance = $last_transaction_rh->{balance};
+
+                die "no balance found:", Dumper( $last_transaction_rh )
+                    if not defined $balance;
+
+                $balance += $amount;
+
+                $transaction_rh->{balance}     = $balance;
+                $transaction_rh->{balance_str} = $balance;
+
+                _as_dollars( \$transaction_rh->{balance_str} );
+            }
+
+            $is_seen{$key} = $list_number;
+
+            unshift @merger, $transaction_rh;
+        }
 
         return _audit_transaction_list( \@merger, 0 );
     }
@@ -744,13 +783,13 @@ sub new {
     return
         if !$self->success();
 
+    croak "NFCU online banking is off line\n"
+        if $self->content() =~ $OFFLINE_REGEX;
+
     $self->get( $URL_FOR{main} );
 
     return
         if !$self->success();
-
-    croak "NFCU online banking is off line\n"
-        if $self->content() =~ $OFFLINE_REGEX;
 
     return
         if $self->content() !~ $AUTHENTICATED_REGEX;
@@ -855,7 +894,9 @@ sub get_transactions {
     my $billpay_ra = $self->get_billpay_transactions(
         { status_ra => [qw( pending paid )] }
     );
+
     my $recent_ra     = $self->get_recent_transactions();
+
     my $estatement_ra = $self->get_estatement_transactions();
 
     return _merge( $billpay_ra, $recent_ra, $estatement_ra );
@@ -934,7 +975,11 @@ sub get_recent_transactions {
         die "couldn't parse row:$row\n"
             if !@data;
 
-        $data[0] =~ s{<[^>]+>}{}xmsg;
+        for my $i ( 0 .. $#data ) {
+
+            $data[$i] =~ s{<[^>]+>}{}xmsg;
+        }
+
         $data[0] =~ tr/A-Z/a-z/;
 
         my $status = $data[0] eq 'pending' ? 'pending'         : 'confirmed';
@@ -1580,11 +1625,21 @@ sub get_future_transactions {
 
         my $event_rh = $schedule_rh->{$category};
 
-        my $day_of_month     = $event_rh->{day_of_month};
-        my $amount           = $event_rh->{amount} || $event_rh->{ave_amount};
-        my $interval         = $event_rh->{interval} || $event_rh->{ave_interval};
-        my $last_occur_epoch = $event_rh->{last_occur_epoch} || $last_occur_for{$category};
-        my $item             = ucfirst lc $category;
+        my $item         = ucfirst lc $category;
+        my $day_of_month = $event_rh->{day_of_month};
+
+        my $interval
+            = $event_rh->{interval}
+            || $event_rh->{ave_interval};
+
+        my $amount
+            = $event_rh->{amount}
+            || $event_rh->{ave_amount};
+
+        my $last_occur_epoch
+            = $event_rh->{last_occur_epoch}
+            || $last_occur_for{$category}
+            || $from_epoch;
 
         _as_cents( \$amount );
 
@@ -1592,7 +1647,7 @@ sub get_future_transactions {
 
         _as_dollars( \$amount_str );
 
-        my $epoch = $last_occur_epoch;
+        my $epoch = $last_occur_epoch || $from_epoch;
 
         DAY:
         while ( $epoch <= $to_epoch ) {
@@ -1741,7 +1796,7 @@ Union accounts.
       print "$category: $total, $weekly_ave, $monthly_ave\n";
   }
 
-=head1 WARNING
+=head1 ADVISORY
 
 This module is designed to interact with your online
 banking service at Navy Federal Credit Union. You are fully
@@ -1752,7 +1807,7 @@ security, accuracy and quality is up to your expectations.
 The author cannot assume responsibility for any untoward or
 nefarious activities attempted with this software.
 
-You are advised to never leave passwords, access numbers or
+Don't leave your financial passwords, access numbers or
 user IDs hard coded in your programs.
 
 =head1 DESCRIPTION
@@ -1761,7 +1816,12 @@ This is an OO interface to the NFCU online banking interface at:
   https://www.navyfederal.org/
 
 The goal is to provide a convenient read-only interface for your
-financial data.
+financial data. This module also gives you the ability to make
+projections based on known pending transactions and scheduled
+transactions. This can come in handy when contemplating the impact
+of a purchase or a new monthly expense.
+
+Use the sample program in the example directory to get started.
 
 =head1 METHODS
 
@@ -2072,7 +2132,7 @@ schedule is the result of some guess-work. Maybe in a future release ...
 
 =back
 
-=head1 TODO
+=head1 LIMITATIONS
 
 This is currently "EveryDay Checking" oriented. There are some optional
 (and currently undocumented and untested) parameters which could potentially
@@ -2080,8 +2140,11 @@ be used to focus on particular accounts such as a credit card, loan, savings
 or any other accounts accessible. A future revision will support alternate
 accounts of interest.
 
-This is a working first draft which is useful to the author. It comes with no
-guarantee as to the correctness or suitability for any particular purpose.
+As of July 23, 2011 there is a new "nickname" feature for labeling your
+accounts. Until the "EveryDay Checking" limitation is resolved you are
+advised not to use the nickname feature if you want to access your data
+with this module.
+
 
 =head1 AUTHOR
 

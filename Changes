@@ -1,5 +1,8 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.09  Mon Aug 01 19:09:54 2011
+    - bug fix for recently paid transactions dropping out 
+
 0.08  Sun Jul 24 09:40:14 2011
     - Revised due to changes on nfcu website.
 
