@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.09;
+our $VERSION = 0.10;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_ROW_REGEX, $PAYMENT_REGEX,
     $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX, $ESTATEMENT_PERIOD_REGEX, $TIME_ZONE );
@@ -1057,6 +1057,22 @@ sub get_estatement_transactions {
         my ( $a, $b ) = @_;
         my ( $ma, $da, $ya ) = split /\D/, $a;
         my ( $mb, $db, $yb ) = split /\D/, $b;
+
+        if (   !defined $da
+            || !defined $db
+            || !defined $ma
+            || !defined $mb
+            || !defined $ya
+            || !defined $yb )
+        {
+            warn "estatement link text comparison $a::$b looks weird";
+
+            for my $rs ( \$da, \$db, \$ma, \$mb, \$ya, \$yb ) {
+
+                ${$rs} ||= 0;
+            }
+        }
+
         return $ya <=> $yb
             if $ya != $yb;
         return $ma <=> $mb
@@ -1065,6 +1081,7 @@ sub get_estatement_transactions {
     };
     my @links =
         sort { $date_cmp_rc->( $a->text(), $b->text() ) }
+        grep { $_->text() }
         $self->find_all_links( url_regex => $ESTATEMENT_URL_REGEX );
 
     my $account_regex = qr{
