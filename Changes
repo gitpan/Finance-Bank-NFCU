@@ -1,5 +1,8 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.11  Sun Sep 25 14:08:41 2011
+    - bug fix for parsing revised HTML on recent transactions page 
+
 0.10  Sat Aug 20 06:52:18 2011
     - work-around for strange links on the estatements page
 

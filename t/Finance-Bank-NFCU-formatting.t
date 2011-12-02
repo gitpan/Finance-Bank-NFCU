@@ -6,7 +6,10 @@
 # change 'tests => 1' to 'tests => last_test_to_print';
 
 use Test::More 'no_plan';
-BEGIN { use_ok('Finance::Bank::NFCU') };
+BEGIN {
+    use_ok('Finance::Bank::NFCU');
+    can_ok( 'Finance::Bank::NFCU', '_as_cents', '_as_dollars' );
+};
 
 #########################
 

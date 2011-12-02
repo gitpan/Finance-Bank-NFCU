@@ -2,6 +2,6 @@ Changes
 Makefile.PL
 MANIFEST
 README
-t/Finance-Bank-NFCU.t
+t/Finance-Bank-NFCU-formatting.t
 lib/Finance/Bank/NFCU.pm
 example/example_nfcu.pl

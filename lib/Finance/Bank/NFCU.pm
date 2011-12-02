@@ -16,10 +16,11 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.10;
+our $VERSION = 0.11;
 
-my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_ROW_REGEX, $PAYMENT_REGEX,
-    $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX, $ESTATEMENT_PERIOD_REGEX, $TIME_ZONE );
+my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
+     $ACCT_ROW_REGEX, $PAYMENT_REGEX, $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX,
+     $ESTATEMENT_PERIOD_REGEX, $TIME_ZONE );
 {
     Readonly %URL_FOR => (
         login        => 'https://myaccounts.navyfcu.org/cgi-bin/ifsewwwc?Logon',
@@ -49,7 +50,7 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX, $ACCT_
     }xms;
 
     Readonly $ACCT_ROW_REGEX => qr{
-        <tr \s id="sortall [^"]+ "> \s* ( .+? ) \s* </tr>
+        <tr \s id="sort \w+ [^"]+ " [^>]* > \s* ( .+? ) \s* </tr>
     }xms;
 
     Readonly $ESTATEMENT_URL_REGEX => qr{
@@ -896,7 +897,6 @@ sub get_transactions {
     );
 
     my $recent_ra     = $self->get_recent_transactions();
-
     my $estatement_ra = $self->get_estatement_transactions();
 
     return _merge( $billpay_ra, $recent_ra, $estatement_ra );
@@ -963,63 +963,9 @@ sub get_recent_transactions {
         $html = $self->content();
     }
 
-    my @transactions;
+    my $transaction_ra = _parse_recent( $html, $to_epoch, $from_epoch, $categorize_rc, $tidy_rc );
 
-    ROW:
-    while ( $html =~ m{ $ACCT_ROW_REGEX }xmsg ) {
-
-        my $row = $1;
-
-        my @data = $row =~ m{<td [^>]* > \s* ( .+? ) \s* </td>}xmsg;
-
-        die "couldn't parse row:$row\n"
-            if !@data;
-
-        for my $i ( 0 .. $#data ) {
-
-            $data[$i] =~ s{<[^>]+>}{}xmsg;
-        }
-
-        $data[0] =~ tr/A-Z/a-z/;
-
-        my $status = $data[0] eq 'pending' ? 'pending'         : 'confirmed';
-        my $date   = $data[0] eq 'pending' ? _formatted_date() : $data[0];
-        my $item   = $data[1];
-        my $amount_str  = $data[2];
-        my $balance_str = $data[3];
-        my $epoch       = _compute_epoch($date);
-
-        next ROW
-            if $epoch > $to_epoch;
-
-        last ROW
-            if $epoch <= $from_epoch;
-
-        my ( $amount, $balance ) = ( $amount_str, $balance_str );
-
-        _as_cents( \$amount, \$balance );
-
-        my $category = $categorize_rc->( $item, $amount );
-
-        croak "categorize function didn't return a category for: $item ($amount)"
-            if !defined $category;
-
-        my %transaction = (
-            amount      => $amount,
-            amount_str  => $amount_str,
-            balance     => $balance,
-            balance_str => $balance_str,
-            category    => $category,
-            date        => $date,
-            epoch       => $epoch,
-            item        => $tidy_rc->($item),
-            status      => $status,
-        );
-
-        push @transactions, \%transaction;
-    }
-
-    return _audit_transaction_list( \@transactions, 0 );
+    return _audit_transaction_list( $transaction_ra, 0 );
 }
 
 sub get_estatement_transactions {
@@ -1749,6 +1695,74 @@ sub get_future_transactions {
     return _merge( \@transactions );
 }
 
+sub _parse_recent {
+    my ( $html, $to_epoch, $from_epoch, $categorize_rc, $tidy_rc ) = @_;
+
+    my @transactions;
+
+    ROW:
+    while ( $html =~ m{ $ACCT_ROW_REGEX }xmsg ) {
+
+        my $row = $1;
+
+        my @data = $row =~ m{<td [^>]* > \s* ( .+? ) \s* </td>}xmsg;
+
+        die "couldn't parse row:$row\n"
+            if !@data;
+
+        next ROW
+            if !defined $data[1] || !defined $data[3];
+
+        for my $i ( 0 .. $#data ) {
+
+            $data[$i] =~ s{<[^>]+>}{}xmsg;
+        }
+
+        $data[0] =~ tr/A-Z/a-z/;
+
+        my $status = $data[0] eq 'pending' ? 'pending'         : 'confirmed';
+        my $date   = $data[0] eq 'pending' ? _formatted_date() : $data[0];
+        my $item   = $data[1];
+        my $amount_str  = $data[2];
+        my $balance_str = $data[3];
+        my $epoch       = _compute_epoch($date);
+
+        next ROW
+            if !$amount_str || $amount_str =~ m{\A \d+ \z}xms;
+
+        next ROW
+            if $to_epoch && $epoch > $to_epoch;
+
+        last ROW
+            if $from_epoch && $epoch <= $from_epoch;
+
+        my ( $amount, $balance ) = ( $amount_str, $balance_str );
+
+        _as_cents( \$amount, \$balance );
+
+        my $category = $categorize_rc->( $item, $amount );
+
+        croak "categorize function didn't return a category for: $item ($amount)"
+            if !defined $category;
+
+        my %transaction = (
+            amount      => $amount,
+            amount_str  => $amount_str,
+            balance     => $balance,
+            balance_str => $balance_str,
+            category    => $category,
+            date        => $date,
+            epoch       => $epoch,
+            item        => $tidy_rc->($item),
+            status      => $status,
+        );
+
+        push @transactions, \%transaction;
+    }
+
+    return \@transactions;
+}
+
 1;
 
 __END__
@@ -2151,6 +2165,14 @@ schedule is the result of some guess-work. Maybe in a future release ...
 
 =head1 LIMITATIONS
 
+This module parses HTML on the NFCU website which is subject to change
+without notice. Likewise this module could be broken without notice.
+
+The transactions for recent, pending billpay, and historical eStatements are
+merged to create a single transaction list. It usually works great. But there
+are some discrepancies with transactions in 'paid' billpay status which may
+sometimes be duplicated as predicted transactions.
+
 This is currently "EveryDay Checking" oriented. There are some optional
 (and currently undocumented and untested) parameters which could potentially
 be used to focus on particular accounts such as a credit card, loan, savings
@@ -2162,6 +2184,9 @@ accounts. Until the "EveryDay Checking" limitation is resolved you are
 advised not to use the nickname feature if you want to access your data
 with this module.
 
+Given these limitations I'm inclined to rate this module a 3 of 5 stars.
+It's a tremendous convenience when it's working right. But surprising results
+should be treated with skepticism.
 
 =head1 AUTHOR
 
