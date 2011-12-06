@@ -1,8 +1,10 @@
 use 5.010001;
 use ExtUtils::MakeMaker;
+# See lib/ExtUtils/MakeMaker.pm for details of how to influence
+# the contents of the Makefile that is written.
 WriteMakefile(
     NAME              => 'Finance::Bank::NFCU',
-    VERSION_FROM      => 'lib/Finance/Bank/NFCU.pm',
+    VERSION_FROM      => 'lib/Finance/Bank/NFCU.pm', # finds $VERSION
     PREREQ_PM         => {
         'Data::Dumper'    => '2.101',
         'Date::Manip::TZ' => '5.56',
@@ -14,7 +16,7 @@ WriteMakefile(
         'WWW::Mechanize'  => '1.66',
         'IO::Prompt'      => '0.997001',
     },
-    ($] >= 5.005 ?
-      (ABSTRACT_FROM  => 'lib/Finance/Bank/NFCU.pm',
+    ($] >= 5.005 ?     ## Add these new keywords supported since 5.005
+      (ABSTRACT_FROM  => 'lib/Finance/Bank/NFCU.pm', # retrieve abstract from module
        AUTHOR         => 'Dylan Doxey <dylan@>') : ()),
 );

@@ -1,7 +1,12 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.12  Mon Dec 05 20:41:17 2011
+    - Revisions to catch up with HTML changes
+    - added cookie_file option
+
 0.11  Sun Sep 25 14:08:41 2011
-    - bug fix for parsing revised HTML on recent transactions page 
+    - improved testing
+    - bug fix for merging transaction lists
 
 0.10  Sat Aug 20 06:52:18 2011
     - work-around for strange links on the estatements page

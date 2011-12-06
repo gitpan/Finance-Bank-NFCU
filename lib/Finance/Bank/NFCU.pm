@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.11;
+our $VERSION = 0.12;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
      $ACCT_ROW_REGEX, $PAYMENT_REGEX, $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX,
@@ -57,9 +57,15 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
         statementType=A
     }xms;
 
-    Readonly $ESTATEMENT_ROW_REGEX => qr{
-        ( \d+ - \d+ .+? \d+ [.] \d{2} ) \n ( [ ]{6} [^\n]+ )?
-    }xms;
+    Readonly $ESTATEMENT_ROW_REGEX => qr/
+        ( \d+ - \d+ .+? (?: \n [ ]{6} [^\n]+ )? [.] \d{2} ) \n
+    /xms;
+
+    #  STATEMENT PERIOD
+    #  From    11-21-08
+    #  Through 12-20-08
+    #   ACCOUNT NUMBER
+    #   00001491962005
 
     #   STATEMENT PERIOD
     #  05/21/11 - 06/20/11
@@ -136,7 +142,8 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
                     }
                     elsif ( defined $value ) {
 
-                        croak "$key is expected to have a ", ( ref $spec ), " type reference";
+                        croak "$key is expected to have a ", ( ref $spec ),
+                            " type reference";
                     }
 
                     push @values, $spec;
@@ -220,15 +227,28 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
 
             my ( $dollars, $cents, $is_negative ) = _parse_money( $rs );
 
-            $cents =~ s{\D}{}xmsg;
+            if ( defined $cents ) {
 
-            $cents .= '00';
-            $cents = $dollars . ( substr $cents, 0, 2 ) . '.' . ( substr $cents, 2 );
-            $cents *= $is_negative ? -1 : 1;
+                $cents =~ s{\D}{}xmsg;
 
-            ${$rs} = sprintf '%.10f', $cents;
-            ${$rs} =~ s{ [0]+ \z}{}xmsg;
-            ${$rs} =~ s{ \D \z}{}xmsg;
+                $cents .= '00';
+
+                $cents =
+                      $dollars
+                    . ( substr $cents, 0, 2 )
+                    . '.'
+                    . ( substr $cents, 2 );
+
+                $cents *= $is_negative ? -1 : 1;
+
+                ${$rs} = sprintf '%.10f', $cents;
+                ${$rs} =~ s{ 0+ \z}{}xmsg;
+                ${$rs} =~ s{ \D \z}{}xmsg;
+            }
+            else {
+
+                ${$rs} = "";
+            }
         }
         return;
     }
@@ -243,18 +263,14 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
 
         if ( ${$rs} =~ m{\A ( [,\d]+ ) ( [.] \d+ ) \z}xms ) {
 
+            ( $dollars, $cents ) = ( $1, $2 );
+            $dollars =~ s{,}{}xmsg;
+
             if ( $is_dollars ) {
 
-                ( $dollars, $cents ) = ( $1, $2 );
-
-                $dollars =~ s{,}{}xmsg;
                 $cents = substr $cents, 1;
             }
             else {
-
-                ( $dollars, $cents ) = ( $1, $2 );
-
-                $dollars =~ s{,}{}xmsg;
 
                 $cents   = ( substr $dollars, -2 ) . $cents;
                 $dollars = substr $dollars, 0, -2;
@@ -348,10 +364,11 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
         TRANS:
         for my $transaction_rh (@master) {
 
-            my ( $epoch, $status, $item, $amount, $category, $list_number )
-                = @{$transaction_rh}{qw( epoch status item amount category _list_number )};
+            my ( $epoch, $status, $item, $amount, $category, $list_number ) =
+                @{$transaction_rh}
+                {qw( epoch status item amount category _list_number )};
 
-            my $key = sprintf '%s,%s,%s', $epoch, $amount, $category;
+            my $key = "$epoch,$amount,$category";
 
             next TRANS
                 if $is_seen{$key} && $is_seen{$key} ne $list_number;
@@ -751,6 +768,11 @@ sub new {
     my $user_id       = delete $option_rh->{user_id};
     my $password      = delete $option_rh->{password};
 
+    my $cookie_file
+        = exists $option_rh->{cookie_file}
+        ? delete $option_rh->{cookie_file}
+        : "";
+
     my %default_for = (
         stack_depth => 1, # lower memory consumption
         agent       => __PACKAGE__ . '/' . $VERSION,
@@ -765,35 +787,51 @@ sub new {
 
     my $self = bless $class->SUPER::new( %{ $option_rh } ), $class;
 
-    $self->get( $URL_FOR{login} );
+    if ( $cookie_file ) {
 
-    croak "failed to get: ", $URL_FOR{login}
-        if !$self->success();
-
-    my %form = (
-        'Submit'           => 'Sign+on',
-        'passwrd'          => $password,
-        'userid'           => $user_id,
-        'prevcmd'          => '',
-        'token'            => '0',
-        'comboLogonNumber' => $access_number,
-        'nls'              => 'EN'
-    );
-    $self->post( $URL_FOR{login}, \%form );
-
-    return
-        if !$self->success();
-
-    croak "NFCU online banking is off line\n"
-        if $self->content() =~ $OFFLINE_REGEX;
+        $self->cookie_jar( {
+            file           => $cookie_file,
+            autosave       => 1,
+            ignore_discard => 1,
+        } );
+    }
 
     $self->get( $URL_FOR{main} );
 
-    return
-        if !$self->success();
+    if (  !$self->success()
+        || $self->content() !~ $AUTHENTICATED_REGEX )
+    {
 
-    return
-        if $self->content() !~ $AUTHENTICATED_REGEX;
+        $self->get( $URL_FOR{login} );
+
+        croak "failed to get: ", $URL_FOR{login}
+            if !$self->success();
+
+        my %form = (
+            'Submit'           => 'Sign+on',
+            'passwrd'          => $password,
+            'userid'           => $user_id,
+            'prevcmd'          => '',
+            'token'            => '0',
+            'comboLogonNumber' => $access_number,
+            'nls'              => 'EN'
+        );
+        $self->post( $URL_FOR{login}, \%form );
+
+        return
+            if !$self->success();
+
+        croak "NFCU online banking is off line\n"
+            if $self->content() =~ $OFFLINE_REGEX;
+
+        $self->get( $URL_FOR{main} );
+
+        return
+            if !$self->success();
+
+        return
+            if $self->content() !~ $AUTHENTICATED_REGEX;
+    }
 
     return $self;
 }
@@ -1031,10 +1069,10 @@ sub get_estatement_transactions {
         $self->find_all_links( url_regex => $ESTATEMENT_URL_REGEX );
 
     my $account_regex = qr{
-        \w+ \s \w+ \s+ - \s+ $account_number \s+
+        \w+ \s \w+ (?: \s+ Account )? \s* -+ \s* $account_number \s+
         ( .+? )
         \d+ - \d+ \s+ Ending \s Balance
-    }xms;
+    }xmsi;
 
     my @transactions;
 
@@ -1066,13 +1104,13 @@ sub get_estatement_transactions {
         my @period_dates = $html =~ $ESTATEMENT_PERIOD_REGEX;
 
         die "failed to parse period dates from: $cache_filename:\n",
-            $link->url()
+            $link->url(), " ($cache_filename)"
             if !@period_dates;
 
         my ($body) = $html =~ $account_regex;
 
         die "failed to parse $account - $account_number body from ",
-            $link->url()
+            $link->url(), " ($cache_filename)"
             if !$body;
 
         my %year_for;
@@ -1089,23 +1127,20 @@ sub get_estatement_transactions {
         ROW:
         while ( $body =~ m{ $ESTATEMENT_ROW_REGEX }xmsg ) {
 
-            my ( $row, $item_line2 ) = ( $1, $2 );
-
-            $row =~ s{ \n \s* }{ }xmsg;
+            my $row = $1;
 
             next ROW
                 if $row =~ m{ beginning \s+ balance }xmsi;
 
-            my ( $month_day_item, $amount_str, $balance_str ) = split /\s{3,}/, $row;
+            $row =~ s{ \s*? \n \s* }{ }xmsg;
+
+            my ( $month_day_item, $amount_str, $balance_str ) = $row =~ m/\A ( .+? ) \s{3,} ( \S+ ) \s{3,} ( \S+ ) \z/xms;
+
+die "ROW:$row:\n"
+    if not defined $amount_str;
 
             my ( $month, $day, $item ) = $month_day_item =~ m{\A ( \d+ )-( \d+ ) \s ( .+ ) }xms;
 
-            if ( $item_line2 ) {
-
-                $item .= $item_line2;
-            }
-
-            $item =~ s{ \s+ }{ }xmsg;
             $item =~ s{(?: \A \s* | \s* \z )}{}xmsg;
 
             my $date = sprintf '%0.2d/%0.2d/%d', $month, $day, $year_for{$month};
@@ -1206,18 +1241,18 @@ sub get_billpay_transactions {
 
         my $hash_str = $1;
 
-        # }
-        #    upperName              : 'U.S. Department of Education',
-        #    amount                 : 'Canceled',
-        #    feeamount              : '',
-        #    MMDD_dateToPay         : '03/30/11',
-        #    MMDDYYYY_dateToPay     : '03/30/2011',
-        #    status                 : 'Canceled',
-        #    numericStatus          : '4',
-        #    id                     : '000000000000002',
-        #    pmtId                  : '20110226034246960182',
-        #    mobilePaymentIndicator : 'N',
-        #    mobilePaymentAltText   : ''
+        # {
+        #     upperName              => 'GE MONEY BANK',
+        #     amount                 => '$270.00',
+        #     feeamount              => '',
+        #     MMDD_dateToPay         => '01/05/12',
+        #     MMDDYYYY_dateToPay     => '01/05/2012',
+        #     status                 => 'Pending',
+        #     numericStatus          => '1',
+        #     id                     => '000000000000027',
+        #     pmtId                  => '20111203025714384119',
+        #     mobilePaymentIndicator => 'N',
+        #     mobilePaymentAltText   => ''
         # }
         $hash_str =~ s{ \s ( \w+ ) : \s '}{ $1 => '}xmsg;
 
@@ -1251,6 +1286,8 @@ sub get_billpay_transactions {
 
             _as_cents( \$amount );
         }
+
+print "$hash_str\n" if $amount eq "";
 
         my $category = $categorize_rc->( $item, $amount );
 
@@ -2165,14 +2202,6 @@ schedule is the result of some guess-work. Maybe in a future release ...
 
 =head1 LIMITATIONS
 
-This module parses HTML on the NFCU website which is subject to change
-without notice. Likewise this module could be broken without notice.
-
-The transactions for recent, pending billpay, and historical eStatements are
-merged to create a single transaction list. It usually works great. But there
-are some discrepancies with transactions in 'paid' billpay status which may
-sometimes be duplicated as predicted transactions.
-
 This is currently "EveryDay Checking" oriented. There are some optional
 (and currently undocumented and untested) parameters which could potentially
 be used to focus on particular accounts such as a credit card, loan, savings
@@ -2184,9 +2213,6 @@ accounts. Until the "EveryDay Checking" limitation is resolved you are
 advised not to use the nickname feature if you want to access your data
 with this module.
 
-Given these limitations I'm inclined to rate this module a 3 of 5 stars.
-It's a tremendous convenience when it's working right. But surprising results
-should be treated with skepticism.
 
 =head1 AUTHOR
 
