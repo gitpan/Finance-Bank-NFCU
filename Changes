@@ -1,5 +1,9 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.13  Tue Mar 05 23:27:46 2012
+    - added cache_override option
+    - bug fix with first occurance of new transaction type
+
 0.12  Mon Dec 05 20:41:17 2011
     - Revisions to catch up with HTML changes
     - added cookie_file option

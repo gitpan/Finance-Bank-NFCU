@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.12;
+our $VERSION = 0.13;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
      $ACCT_ROW_REGEX, $PAYMENT_REGEX, $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX,
@@ -774,8 +774,8 @@ sub new {
         : "";
 
     my %default_for = (
-        stack_depth => 1, # lower memory consumption
-        agent       => __PACKAGE__ . '/' . $VERSION,
+        stack_depth    => 1, # lower memory consumption
+        agent          => __PACKAGE__ . '/' . $VERSION,
     );
     for my $key (keys %default_for) {
 
@@ -839,7 +839,9 @@ sub new {
 sub config {
     my ( $self, $config_rh ) = @_;
 
-    for my $option (qw( cache_dir categorize_rc tidy_rc error_level )) {
+    for my $option (
+        qw( cache_override cache_dir categorize_rc tidy_rc error_level ))
+    {
 
         if ( exists $config_rh->{$option} ) {
 
@@ -943,7 +945,8 @@ sub get_transactions {
 sub get_recent_transactions {
     my ( $self, $config_rh ) = @_;
 
-    my ( $account, $from_date, $from_epoch, $to_date, $to_epoch ) = _parse_config(
+    my ( $account, $from_date, $from_epoch, $to_date, $to_epoch )
+        = _parse_config(
         $config_rh,
         {   account    => qr{\A ( \w+ \s \w+ ) \z}xms,
             from_date  => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
@@ -951,25 +954,26 @@ sub get_recent_transactions {
             to_date    => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
             to_epoch   => qr{\A ( \d+ ) \z}xms,
         }
-    );
+        );
 
     if ( $from_date && !$from_epoch ) {
 
-        $from_epoch = _compute_epoch( $from_date );
+        $from_epoch = _compute_epoch($from_date);
     }
 
     if ( $to_date && !$to_epoch ) {
 
-        $to_epoch = _compute_epoch( $to_date );
+        $to_epoch = _compute_epoch($to_date);
     }
 
     $account    ||= 'EveryDay Checking';
     $from_epoch ||= 0;
     $to_epoch   ||= time + 7 * 86_400;
 
-    my $cache_dir     = $self->{__cache_dir};
-    my $categorize_rc = $self->{__categorize_rc} || \&_categorize;
-    my $tidy_rc       = $self->{__tidy_rc} || \&_tidy_item;
+    my $cache_override = $self->{__cache_override};
+    my $cache_dir      = $self->{__cache_dir};
+    my $categorize_rc  = $self->{__categorize_rc} || \&_categorize;
+    my $tidy_rc        = $self->{__tidy_rc} || \&_tidy_item;
 
     return
         if !exists $self->{__nfcu_account_url_rh}
@@ -983,8 +987,14 @@ sub get_recent_transactions {
     my $account_number = $account_rh->{account_number};
     my $account_url    = $account_rh->{detail_url};
 
-    my $cache_filename = _cache_filename( $cache_dir, $account_url, 'hour' );
-    my $html = _fetch_cache($cache_filename);
+    my ( $filename, $html ) = ( "" ) x 2;
+
+    if ( !$cache_override ) {
+
+        $filename = _cache_filename( $cache_dir, $account_url, 'hour' );
+
+        $html = _fetch_cache($filename);
+    }
 
     if ( !$html ) {
 
@@ -993,15 +1003,19 @@ sub get_recent_transactions {
         return
             if !$self->success();
 
-        if ($cache_filename) {
+        $filename ||= _cache_filename( $cache_dir, $account_url, 'hour' );
 
-            $self->save_content($cache_filename);
+        if ($filename) {
+
+            $self->save_content($filename);
         }
 
         $html = $self->content();
     }
 
-    my $transaction_ra = _parse_recent( $html, $to_epoch, $from_epoch, $categorize_rc, $tidy_rc );
+    my $transaction_ra
+        = _parse_recent( $html, $to_epoch, $from_epoch, $categorize_rc,
+        $tidy_rc );
 
     return _audit_transaction_list( $transaction_ra, 0 );
 }
@@ -1081,10 +1095,12 @@ sub get_estatement_transactions {
     LINK:
     for my $link (@links) {
 
-        my ( $m, $d, $y ) = $link->text() =~ m{( \d+ ) \D ( \d+ ) \D ( \d+ )}xms;
+        my ( $m, $d, $y ) = $link->text() =~ m{( \d+ )\D( \d+ )\D( \d+ )}xms;
 
-        my $cache_filename = _cache_filename( $cache_dir, "estatement_$m.$d.$y", 'indefinite' );
-        my $html           = _fetch_cache($cache_filename);
+        my $filename = _cache_filename( $cache_dir, "estatement_$m.$d.$y",
+            'indefinite' );
+
+        my $html = _fetch_cache($filename);
 
         if ( !$html ) {
 
@@ -1093,9 +1109,9 @@ sub get_estatement_transactions {
             die "failed to get ", $link->url()
                 if !$self->success();
 
-            if ($cache_filename) {
+            if ($filename) {
 
-                $self->save_content($cache_filename);
+                $self->save_content($filename);
             }
 
             $html = $self->content();
@@ -1103,14 +1119,14 @@ sub get_estatement_transactions {
 
         my @period_dates = $html =~ $ESTATEMENT_PERIOD_REGEX;
 
-        die "failed to parse period dates from: $cache_filename:\n",
-            $link->url(), " ($cache_filename)"
+        die "failed to parse period dates from: $filename:\n",
+            $link->url(), " ($filename)"
             if !@period_dates;
 
         my ($body) = $html =~ $account_regex;
 
         die "failed to parse $account - $account_number body from ",
-            $link->url(), " ($cache_filename)"
+            $link->url(), " ($filename)"
             if !$body;
 
         my %year_for;
@@ -1134,19 +1150,23 @@ sub get_estatement_transactions {
 
             $row =~ s{ \s*? \n \s* }{ }xmsg;
 
-            my ( $month_day_item, $amount_str, $balance_str ) = $row =~ m/\A ( .+? ) \s{3,} ( \S+ ) \s{3,} ( \S+ ) \z/xms;
+            my ( $month_day_item, $amount_str, $balance_str )
+                = $row =~ m/\A ( .+? ) \s{3,} ( \S+ ) \s{3,} ( \S+ ) \z/xms;
 
-die "ROW:$row:\n"
-    if not defined $amount_str;
+            die "ROW:$row:\n"
+                if not defined $amount_str;
 
-            my ( $month, $day, $item ) = $month_day_item =~ m{\A ( \d+ )-( \d+ ) \s ( .+ ) }xms;
+            my ( $month, $day, $item )
+                = $month_day_item =~ m{\A ( \d+ )-( \d+ ) \s ( .+ ) }xms;
 
             $item =~ s{(?: \A \s* | \s* \z )}{}xmsg;
 
-            my $date = sprintf '%0.2d/%0.2d/%d', $month, $day, $year_for{$month};
+            my $date = sprintf '%0.2d/%0.2d/%d', $month, $day,
+                $year_for{$month};
             my $epoch = _compute_epoch($date);
 
-            ( $amount_str, $balance_str ) = ( '$' . $amount_str, '$' . $balance_str );
+            ( $amount_str, $balance_str )
+                = ( '$' . $amount_str, '$' . $balance_str );
 
             my ( $amount, $balance ) = ( $amount_str, $balance_str );
 
@@ -1154,7 +1174,8 @@ die "ROW:$row:\n"
 
             my $category = $categorize_rc->( $item, $amount );
 
-            croak "categorize function didn't return a category for: $item ($amount)"
+            croak
+                "categorize function didn't return a category for: $item ($amount)"
                 if !defined $category;
 
             my %transaction = (
@@ -1200,10 +1221,12 @@ sub get_billpay_transactions {
         $target{paid}    = 1;
     }
 
-    my $account       = $config_rh->{account} || 'EveryDay Checking';
-    my $cache_dir     = $self->{__cache_dir};
-    my $categorize_rc = $self->{__categorize_rc} || \&_categorize;
-    my $tidy_rc       = $self->{__tidy_rc} || \&_tidy_item;
+    my $account        = $config_rh->{account} || 'EveryDay Checking';
+    my $cache_override = $self->{__cache_override};
+    my $cache_dir      = $self->{__cache_dir};
+    my $categorize_rc  = $self->{__categorize_rc} || \&_categorize;
+    my $tidy_rc        = $self->{__tidy_rc} || \&_tidy_item;
+    my $billpay_url    = $URL_FOR{billpay};
 
     return
         if !exists $self->{__nfcu_account_url_rh}
@@ -1218,19 +1241,27 @@ sub get_billpay_transactions {
 
     $account = $balance_rh->{account};
 
-    my $cache_filename = _cache_filename( $cache_dir, $URL_FOR{billpay}, 'hour' );
-    my $html           = _fetch_cache( $cache_filename );
+    my ( $filename, $html ) = ( "" ) x 2;
+
+    if ( !$cache_override ) {
+
+        $filename = _cache_filename( $cache_dir, $billpay_url, 'hour' );
+
+        $html = _fetch_cache($filename);
+    }
 
     if ( !$html ) {
 
-        $self->get( $URL_FOR{billpay} );
+        $self->get( $billpay_url );
 
         return
             if !$self->success();
 
-        if ( $cache_filename ) {
+        $filename ||= _cache_filename( $cache_dir, $billpay_url, 'hour' );
 
-            $self->save_content( $cache_filename );
+        if ($filename) {
+
+            $self->save_content($filename);
         }
 
         $html = $self->content();
@@ -1614,6 +1645,8 @@ sub get_future_transactions {
 
             next CAT;
         }
+
+        $last_occur_for{$category} = 0;
     }
 
     my $today = _compute_epoch();
@@ -1629,17 +1662,19 @@ sub get_future_transactions {
         my $day_of_month = $event_rh->{day_of_month};
 
         my $interval
-            = $event_rh->{interval}
-            || $event_rh->{ave_interval};
+            = defined $event_rh->{interval}     ? $event_rh->{interval}
+            : defined $event_rh->{ave_interval} ? $event_rh->{ave_interval}
+            :                                     0;
 
         my $amount
-            = $event_rh->{amount}
-            || $event_rh->{ave_amount};
+            = defined $event_rh->{amount}     ? $event_rh->{amount}
+            : defined $event_rh->{ave_amount} ? $event_rh->{ave_amount}
+            :                                   0;
 
         my $last_occur_epoch
-            = $event_rh->{last_occur_epoch}
-            || $last_occur_for{$category}
-            || $from_epoch;
+            = defined $event_rh->{last_occur_epoch} ? $event_rh->{last_occur_epoch}
+            : defined $last_occur_for{$category}    ? $last_occur_for{$category}
+            :                                         $from_epoch;
 
         _as_cents( \$amount );
 
@@ -1706,11 +1741,11 @@ sub get_future_transactions {
 
             my $since_tag
                 = $last_occur_epoch
-                ? ( sprintf ' (%d days since %s)',
+                ? ( sprintf '(%d days since %s)',
                     $days_elapsed,
                     "" . _formatted_date( $last_occur_epoch )
                   )
-                : ' (no prior occurrences)';
+                : '(no prior occurrences)';
 
             my %transaction = (
                 amount      => $amount,
@@ -1718,7 +1753,7 @@ sub get_future_transactions {
                 category    => $category,
                 date        => $date,
                 epoch       => $epoch,
-                item        => "$item$since_tag",
+                item        => "$item $since_tag",
                 status      => 'predicted',
             );
             push @transactions, \%transaction;
@@ -1936,6 +1971,12 @@ The directory where you'd like to cache the bank statement source data.
 Caching the data will allow eStatement information to be available
 after it is no longer on the website. This directory will contain your
 financial data in plain text and you should choose it carefully.
+
+=item cache_override
+
+Use this if you want to override any caching behavior for recent
+transations. This may apply if you're expecting a new transaction to appear
+which has occurred since the currently cached data was stored.
 
 =item tidy_rc
 
@@ -2213,6 +2254,12 @@ accounts. Until the "EveryDay Checking" limitation is resolved you are
 advised not to use the nickname feature if you want to access your data
 with this module.
 
+=head1 BUGS
+
+Pending billpay transactions go to 'paid' status before going to 'confirmed'
+status. There is a bug in correctly merging the paid status transactions with
+the pending and confirmed. This results in duplicate entries and could have
+an alarming effect.
 
 =head1 AUTHOR
 
