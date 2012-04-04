@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.13;
+our $VERSION = 0.14;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
      $ACCT_ROW_REGEX, $PAYMENT_REGEX, $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX,
@@ -368,10 +368,19 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
                 @{$transaction_rh}
                 {qw( epoch status item amount category _list_number )};
 
-            my $key = "$epoch,$amount,$category";
+            my $key = "$amount,$category";
 
-            next TRANS
-                if $is_seen{$key} && $is_seen{$key} ne $list_number;
+            if ( $is_seen{$key} ) {
+
+                my $seen_list_number = $is_seen{$key}->{list_number};
+                my $seen_epoch       = $is_seen{$key}->{epoch};
+
+                my $same_epoch = 86_401 > abs $epoch - $seen_epoch;
+                my $diff_list  = $list_number != $seen_list_number;
+
+                next TRANS
+                    if $same_epoch && $diff_list;
+            }
 
             if ( @merger && $status ne 'confirmed' ) {
 
@@ -400,7 +409,10 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
                 _as_dollars( \$transaction_rh->{balance_str} );
             }
 
-            $is_seen{$key} = $list_number;
+            $is_seen{$key} = {
+                list_number => $list_number,
+                epoch       => $epoch,
+            };
 
             unshift @merger, $transaction_rh;
         }
@@ -839,9 +851,15 @@ sub new {
 sub config {
     my ( $self, $config_rh ) = @_;
 
-    for my $option (
-        qw( cache_override cache_dir categorize_rc tidy_rc error_level ))
-    {
+    my @options = qw(
+        cache_override
+        cache_dir
+        categorize_rc
+        tidy_rc
+        error_level
+    );
+
+    for my $option (@options) {
 
         if ( exists $config_rh->{$option} ) {
 

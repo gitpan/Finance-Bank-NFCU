@@ -1,5 +1,8 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.14  Tue Apr 03 23:12:16 2012
+    - Fixed a bug in merging between bill-pay and recent transaction lists
+
 0.13  Tue Mar 05 23:27:46 2012
     - added cache_override option
     - bug fix with first occurance of new transaction type
