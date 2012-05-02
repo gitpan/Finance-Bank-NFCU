@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.14;
+our $VERSION = 0.15;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
      $ACCT_ROW_REGEX, $PAYMENT_REGEX, $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX,
@@ -1336,12 +1336,12 @@ sub get_billpay_transactions {
             _as_cents( \$amount );
         }
 
-print "$hash_str\n" if $amount eq "";
-
         my $category = $categorize_rc->( $item, $amount );
 
         croak "categorize function didn't return a category for: $item ($amount)"
             if !defined $category;
+
+        $status = $status eq 'paid' ? 'pending' : $status;    # work-around
 
         my %transaction = (
             amount      => $amount,
@@ -1678,6 +1678,19 @@ sub get_future_transactions {
 
         my $item         = ucfirst lc $category;
         my $day_of_month = $event_rh->{day_of_month};
+        my $on           = $event_rh->{on} || "";
+
+        my ( $on_month, $on_day, $on_year ) = ("") x 3;
+
+        if ( $on =~ m/\A( \d{1,2} ) \D? ( \d{1,2} ) \D? ( \d{2,4} )\z/xms ) {
+
+            ( $on_month, $on_day, $on_year ) = ( $1, $2, $3 );
+
+            if ( 2 == length $on_year ) {
+
+                $on_year += 2000;
+            }
+        }
 
         my $interval
             = defined $event_rh->{interval}     ? $event_rh->{interval}
@@ -1693,6 +1706,18 @@ sub get_future_transactions {
             = defined $event_rh->{last_occur_epoch} ? $event_rh->{last_occur_epoch}
             : defined $last_occur_for{$category}    ? $last_occur_for{$category}
             :                                         $from_epoch;
+
+        my %has_check_for = (
+            day_of_month => ( defined $day_of_month ? 1 : 0 ),
+            on           => ( 0 < length "$on_month$on_day$on_year" ? 1 : 0 ),
+            interval     => ( $interval ? 1 : 0 ),
+        );
+
+        if ( 0 == grep {$_} @has_check_for{qw( on interval day_of_month )} ) {
+
+            croak "no 'interval', 'day_of_month', or 'on' keys: ",
+                Dumper($event_rh);
+        }
 
         _as_cents( \$amount );
 
@@ -1710,14 +1735,42 @@ sub get_future_transactions {
             next DAY
                 if $epoch < $from_epoch;
 
+            my ( $m, $d, $y ) = _formatted_date( $epoch );
+
+            my $hits = 0;
+
             my $days_elapsed = 0;
 
             if ( $day_of_month ) {
 
-                my ( $m, $d ) = _formatted_date( $epoch );
+                my $min_elapsed = 25;    # assumes once a month freq
 
-                next DAY
-                    if $d != $day_of_month;
+                if ( ref $day_of_month eq 'ARRAY' ) {
+
+                    my $freq = @{$day_of_month};
+
+                    $min_elapsed = int $min_elapsed / $freq;
+
+                    my $hit = grep { $d == $_ } @{$day_of_month};
+
+                    $hits += $hit;
+
+                    next DAY
+                        if !$hit
+                            && !$has_check_for{interval}
+                            && !$has_check_for{on};
+                }
+                else {
+
+                    my $hit = $d == $day_of_month ? 1 : 0;
+
+                    $hits += $hit;
+
+                    next DAY
+                        if !$hit
+                            && !$has_check_for{interval}
+                            && !$has_check_for{on};
+                }
 
                 if ( $last_occur_epoch ) {
 
@@ -1725,13 +1778,16 @@ sub get_future_transactions {
                 }
                 else {
 
-                    $days_elapsed = 30;
+                    $days_elapsed = $min_elapsed + 1;
                 }
 
                 next DAY
-                    if $days_elapsed < 25;
+                    if $days_elapsed < $min_elapsed
+                        && !$has_check_for{interval}
+                        && !$has_check_for{on};
             }
-            elsif ( $interval ) {
+
+            if ( $interval ) {
 
                 if ( $last_occur_epoch ) {
 
@@ -1742,12 +1798,30 @@ sub get_future_transactions {
                     $days_elapsed = $interval;
                 }
 
-                next DAY
-                    if $days_elapsed < $interval;
-            }
-            else {
+                my $hit = $days_elapsed >= $interval ? 1 : 0;
 
-                croak 'no interval of day_of_month', Dumper( $event_rh );
+                $hits += $hit;
+
+                next DAY
+                    if !$hit
+                        && !$hits
+                        && !$has_check_for{on};
+            }
+
+            if ( "$on_month$on_day$on_year" ) {
+
+                next DAY
+                    if $on_year && $on_year != $y && !$hits;
+
+                next DAY
+                    if $on_month && $on_month != $m && !$hits;
+
+                next DAY
+                    if $on_day && $on_day != $d && !$hits;
+
+                delete $event_rh->{'on'};
+
+                $hits++;
             }
 
             while ( $epoch < $today ) {
@@ -1757,13 +1831,15 @@ sub get_future_transactions {
 
             my $date = _formatted_date( $epoch );
 
-            my $since_tag
-                = $last_occur_epoch
-                ? ( sprintf '(%d days since %s)',
+            my $since_tag = '(no prior occurrences)';
+
+            if ($last_occur_epoch) {
+
+                $since_tag
+                    = sprintf '(%d days since %s)',
                     $days_elapsed,
-                    "" . _formatted_date( $last_occur_epoch )
-                  )
-                : '(no prior occurrences)';
+                    "" . _formatted_date($last_occur_epoch);
+            }
 
             my %transaction = (
                 amount      => $amount,
@@ -2237,17 +2313,21 @@ a hash of categories (as defined by the categorize function).
 Example:
 
   my %schedule = (
-      'income' => {
-          interval => 14,
-          amount   => 50000,           # cents
-      },
       'housing' => {
           'ave_amount'   => '-250000', # cents
           'day_of_month' => 1,
       },
+      'income' => {
+          amount   => 50000,           # cents
+          'day_of_month' => [ 1, 16 ], # may be a list
+      },
       'groceries' => {
           'interval'   => 13,
           'ave_amount' => '$50.95-',   # dollars
+      },
+      'one_time_expense' => {
+          'on'     => '01/05/2012', # mm/dd/yyyy
+          'amount' => '$42.00-',    # dollars
       },
   );
   my $transaction_ra = $nfcu->get_future_transactions( \%schedule );

@@ -1,5 +1,11 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.15  Tue May 01 08:36:03 2012
+    - day_of_month key may have multiple values
+    - new 'on' key may be a one time event trigger
+    - events may have multiple triggers: on, day_of_month, and interval
+    - work-around for 'paid' status billl-pay bug
+
 0.14  Tue Apr 03 23:12:16 2012
     - Fixed a bug in merging between bill-pay and recent transaction lists
 
