@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.15;
+our $VERSION = 0.16;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
      $ACCT_ROW_REGEX, $PAYMENT_REGEX, $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX,
@@ -1669,6 +1669,8 @@ sub get_future_transactions {
 
     my $today = _compute_epoch();
 
+    my %day_of_month_count_for;
+
     my @transactions;
 
     CAT:
@@ -1678,19 +1680,7 @@ sub get_future_transactions {
 
         my $item         = ucfirst lc $category;
         my $day_of_month = $event_rh->{day_of_month};
-        my $on           = $event_rh->{on} || "";
-
-        my ( $on_month, $on_day, $on_year ) = ("") x 3;
-
-        if ( $on =~ m/\A( \d{1,2} ) \D? ( \d{1,2} ) \D? ( \d{2,4} )\z/xms ) {
-
-            ( $on_month, $on_day, $on_year ) = ( $1, $2, $3 );
-
-            if ( 2 == length $on_year ) {
-
-                $on_year += 2000;
-            }
-        }
+        my $on           = $event_rh->{on};
 
         my $interval
             = defined $event_rh->{interval}     ? $event_rh->{interval}
@@ -1709,14 +1699,52 @@ sub get_future_transactions {
 
         my %has_check_for = (
             day_of_month => ( defined $day_of_month ? 1 : 0 ),
-            on           => ( 0 < length "$on_month$on_day$on_year" ? 1 : 0 ),
-            interval     => ( $interval ? 1 : 0 ),
+            on           => ( defined $on           ? 1 : 0 ),
+            interval     => ( $interval             ? 1 : 0 ),
         );
 
         if ( 0 == grep {$_} @has_check_for{qw( on interval day_of_month )} ) {
 
             croak "no 'interval', 'day_of_month', or 'on' keys: ",
                 Dumper($event_rh);
+        }
+
+        if ( $has_check_for{day_of_month} ) {
+
+            if ( ref $day_of_month ne 'ARRAY' ) {
+
+                $day_of_month = [$day_of_month];
+            }
+
+            for my $day ( @{$day_of_month} ) {
+
+                $day_of_month_count_for{"$category,$day"} = 0;
+            }
+        }
+
+        if ( $has_check_for{on} ) {
+
+            if ( ref $on ne 'ARRAY' ) {
+
+                $on = [$on];
+            }
+
+            my @dates;
+
+            for my $date ( @{$on} ) {
+
+                if ( $date =~ m/\A(\d{1,2})\D?(\d{1,2})\D?(\d{2,4})\z/xms ) {
+
+                    push @dates, [ $1, $2, $3 ];
+
+                    if ( 2 == length $dates[-1]->[-1] ) {
+
+                        $dates[-1]->[-1] += 2000;
+                    }
+                }
+            }
+
+            $on = \@dates;
         }
 
         _as_cents( \$amount );
@@ -1745,32 +1773,51 @@ sub get_future_transactions {
 
                 my $min_elapsed = 25;    # assumes once a month freq
 
-                if ( ref $day_of_month eq 'ARRAY' ) {
+                my $freq = @{$day_of_month};
 
-                    my $freq = @{$day_of_month};
+                $min_elapsed = int $min_elapsed / $freq;
 
-                    $min_elapsed = int $min_elapsed / $freq;
+                my ( $hit, $lesser_i_zero ) = ( 0, 0 );
 
-                    my $hit = grep { $d == $_ } @{$day_of_month};
+                DAY:
+                for my $i ( 0 .. $#{$day_of_month} ) {
 
-                    $hits += $hit;
-
-                    next DAY
-                        if !$hit
-                            && !$has_check_for{interval}
-                            && !$has_check_for{on};
-                }
-                else {
-
-                    my $hit = $d == $day_of_month ? 1 : 0;
-
-                    $hits += $hit;
+                    my $day = $day_of_month->[$i];
 
                     next DAY
-                        if !$hit
-                            && !$has_check_for{interval}
-                            && !$has_check_for{on};
+                        if $lesser_i_zero;
+
+                    $lesser_i_zero
+                        = $day_of_month_count_for{"$category,$day"} == 0
+                        ? 1
+                        : $lesser_i_zero;
+
+                    next DAY
+                        if $day != $d;
+
+                    # 16, 1
+                    # ------
+                    # ...
+                    # $d => 1 no because 16 => 0 ( aka lesser $i is zero )
+                    # $d => 2
+                    # ...
+                    # $d => 15
+                    # $d => 16 yes because no lesser $i is zero
+                    # $d => 17
+                    # ...
+                    # $d => 1
+                    # ...
+
+                    $hit = 1;
+                    last DAY;
                 }
+
+                $hits += $hit;
+
+                next DAY
+                    if !$hit
+                        && !$has_check_for{interval}
+                        && !$has_check_for{on};
 
                 if ( $last_occur_epoch ) {
 
@@ -1785,6 +1832,8 @@ sub get_future_transactions {
                     if $days_elapsed < $min_elapsed
                         && !$has_check_for{interval}
                         && !$has_check_for{on};
+
+                $day_of_month_count_for{"$category,$d"}++;
             }
 
             if ( $interval ) {
@@ -1808,20 +1857,32 @@ sub get_future_transactions {
                         && !$has_check_for{on};
             }
 
-            if ( "$on_month$on_day$on_year" ) {
+            if ( $has_check_for{on} ) {
+
+                my $hit = 0;
+
+                DATE:
+                for my $date_ra ( @{$on} ) {
+
+                    my ( $on_month, $on_day, $on_year ) = @{$date_ra};
+
+                    next DATE
+                        if $on_year && $on_year != $y;
+
+                    next DATE
+                        if $on_month && $on_month != $m;
+
+                    next DATE
+                        if $on_day && $on_day != $d;
+
+                    $hit = 1;
+                    $hits++;
+
+                    last DATE;
+                }
 
                 next DAY
-                    if $on_year && $on_year != $y && !$hits;
-
-                next DAY
-                    if $on_month && $on_month != $m && !$hits;
-
-                next DAY
-                    if $on_day && $on_day != $d && !$hits;
-
-                delete $event_rh->{'on'};
-
-                $hits++;
+                    if !$hit && !$hits;;
             }
 
             while ( $epoch < $today ) {
@@ -2327,6 +2388,14 @@ Example:
       },
       'one_time_expense' => {
           'on'     => '01/05/2012', # mm/dd/yyyy
+          'amount' => '$42.00-',    # dollars
+      },
+      'three_time_expense' => {
+          'on'     => [
+            '01/05/2012', 
+            '02/05/2012', 
+            '03/05/2012', 
+          ],
           'amount' => '$42.00-',    # dollars
       },
   );

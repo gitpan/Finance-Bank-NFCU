@@ -1,5 +1,9 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.16  Wed May 02 19:13:00 2012
+    - 'day_of_month' order of values is significant
+    - 'on' may be a list of dates
+
 0.15  Tue May 01 08:36:03 2012
     - day_of_month key may have multiple values
     - new 'on' key may be a one time event trigger
