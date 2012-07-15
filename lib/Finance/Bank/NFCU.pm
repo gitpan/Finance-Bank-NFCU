@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.16;
+our $VERSION = 0.17;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
      $ACCT_ROW_REGEX, $PAYMENT_REGEX, $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX,
@@ -256,6 +256,11 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
     sub _parse_money {
         my ( $rs ) = @_;
 
+        if ( !$rs || !defined ${$rs} ) {
+            carp 'no value passed to _parse_money';
+            return;
+        }
+
         my ($is_dollars)  = ${$rs} =~ s{(\$)}{}xms;
         my ($is_negative) = ${$rs} =~ s{(-)}{}xms;
 
@@ -298,7 +303,7 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
 
             my $line = ( caller 1 )[2];
 
-            warn "$line - unable to parse: ", ${$rs};
+            warn "line[$line]: unable to parse: ", ${$rs};
             return;
         }
 
@@ -472,29 +477,18 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
     sub _formatted_date {
         my $epoch = defined $_[0] ? $_[0] : $now;
 
-        my $context = wantarray ? 'list' : 'scalar';
-        my $key     = "$epoch/$context";
+        if ( !exists $date_for{$epoch} ) {
 
-        if ( exists $date_for{$key} ) {
+            my $dt = DateTime->from_epoch( epoch => $epoch );
 
-            return $date_for{$key}
-                if $context eq 'scalar';
-
-            return @{ $date_for{$key} };
+            $date_for{$epoch}
+                = [ ( split /\D/, $dt->mdy('/') ), lc $dt->day_abbr(), ];
         }
 
-        my $dt = DateTime->from_epoch( epoch => $epoch );
+        return @{ $date_for{$epoch} }
+            if wantarray;
 
-        $date_for{$key} = $dt->mdy('/');
-
-        if ( $context eq 'list' ) {
-
-            $date_for{$key} = [ split /\D/, $date_for{$key} ];
-
-            return @{ $date_for{$key} };
-        }
-
-        return $date_for{$key};
+        return join '/', @{ $date_for{$epoch} }[ 0 .. 2 ];
     }
 
     sub _compute_epoch {
@@ -512,6 +506,13 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
             if exists $epoch_for{$date};
 
         my ( $m, $d, $y ) = split /\D/, $date;
+
+        if ( $m && !$d && !$y ) {
+
+            my $dt = DateTime->from_epoch( epoch => $m );
+
+            ( $m, $d, $y ) = split /\D/, $dt->mdy('/');
+        }
 
         return
             if !$m || !$d || !$y;
@@ -948,14 +949,16 @@ sub get_balances {
 }
 
 sub get_transactions {
-    my ( $self ) = @_;
+    my ( $self, $config_rh ) = @_;
 
     my $billpay_ra = $self->get_billpay_transactions(
-        { status_ra => [qw( pending paid )] }
+        {    status_ra => [qw( pending paid )],
+             account   => $config_rh->{account},
+        }
     );
 
-    my $recent_ra     = $self->get_recent_transactions();
-    my $estatement_ra = $self->get_estatement_transactions();
+    my $recent_ra     = $self->get_recent_transactions( $config_rh );
+    my $estatement_ra = $self->get_estatement_transactions( $config_rh );
 
     return _merge( $billpay_ra, $recent_ra, $estatement_ra );
 }
@@ -1081,7 +1084,7 @@ sub get_estatement_transactions {
             || !defined $ya
             || !defined $yb )
         {
-            warn "estatement link text comparison $a::$b looks weird";
+            warn "estatement link text comparison ${a}::${b} looks weird";
 
             for my $rs ( \$da, \$db, \$ma, \$mb, \$ya, \$yb ) {
 
@@ -1095,13 +1098,14 @@ sub get_estatement_transactions {
             if $ma != $mb;
         return $da <=> $db;
     };
+
     my @links =
         sort { $date_cmp_rc->( $a->text(), $b->text() ) }
         grep { $_->text() }
         $self->find_all_links( url_regex => $ESTATEMENT_URL_REGEX );
 
     my $account_regex = qr{
-        \w+ \s \w+ (?: \s+ Account )? \s* -+ \s* $account_number \s+
+        \s* -+ \s* $account_number \s+
         ( .+? )
         \d+ - \d+ \s+ Ending \s Balance
     }xmsi;
@@ -1609,9 +1613,10 @@ sub get_transaction_schedule {
 sub get_future_transactions {
     my ( $self, $config_rh ) = @_;
 
-    my ( $from_date, $from_epoch, $schedule_rh, $to_date, $to_epoch ) = _parse_config(
+    my ( $account, $from_date, $from_epoch, $schedule_rh, $to_date, $to_epoch ) = _parse_config(
         $config_rh,
-        {   from_date   => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
+        {   account     => qr{\A ( \w+ \s \w+ ) \z}xms,
+            from_date   => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
             from_epoch  => qr{\A ( \d+ ) \z}xms,
             schedule_rh => {},
             to_date     => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
@@ -1629,297 +1634,228 @@ sub get_future_transactions {
         $to_epoch = _compute_epoch( $to_date );
     }
 
+    $account    ||= 'EveryDay Checking';
     $from_epoch ||= 0;
     $to_epoch   ||= time + ( 365 * 86_400 );
 
     croak "no schedule data given"
         if not keys %{ $schedule_rh };
 
-    my $transaction_ra = $self->get_transactions();
+    my $transaction_ra = $self->get_transactions( { account => $account } );
 
     my %last_occur_for;
 
-    CAT:
-    for my $category (keys %{ $schedule_rh }) {
+    TRANS:
+    for my $transaction_rh ( @{$transaction_ra} ) {
 
-        TRANS:
-        for my $transaction_rh (@{ $transaction_ra }) {
+        my $category = $transaction_rh->{category};
+        my $epoch    = $transaction_rh->{epoch};
 
-            my $epoch  = $transaction_rh->{epoch};
-            my $status = lc $transaction_rh->{status};
+        $last_occur_for{$category} ||= $epoch;
 
-            next TRANS
-                if $category ne $transaction_rh->{category};
+        for my $category ( keys %{$schedule_rh} ) {
 
             next TRANS
-                if $status ne 'confirmed' && $status ne 'pending';
-
-            if ( $epoch > $from_epoch && $status eq 'confirmed' ) {
-
-                $from_epoch = $epoch;
-            }
-
-            $last_occur_for{$category} = $epoch;
-
-            next CAT;
+                if !exists $last_occur_for{$category};
         }
 
-        $last_occur_for{$category} = 0;
+        last TRANS;
     }
-
-    my $today = _compute_epoch();
-
-    my %day_of_month_count_for;
 
     my @transactions;
 
-    CAT:
-    for my $category (keys %{ $schedule_rh }) {
+    my $epoch = _compute_epoch( $from_epoch );
 
-        my $event_rh = $schedule_rh->{$category};
+    while ( $epoch < $to_epoch ) {
 
-        my $item         = ucfirst lc $category;
-        my $day_of_month = $event_rh->{day_of_month};
-        my $on           = $event_rh->{on};
+        my ( $m, $d, $y, $dow ) = _formatted_date($epoch);
 
-        my $interval
-            = defined $event_rh->{interval}     ? $event_rh->{interval}
-            : defined $event_rh->{ave_interval} ? $event_rh->{ave_interval}
-            :                                     0;
+        my $date = "$m/$d/$y";
 
-        my $amount
-            = defined $event_rh->{amount}     ? $event_rh->{amount}
-            : defined $event_rh->{ave_amount} ? $event_rh->{ave_amount}
-            :                                   0;
+        CAT:
+        for my $category ( keys %{$schedule_rh} ) {
 
-        my $last_occur_epoch
-            = defined $event_rh->{last_occur_epoch} ? $event_rh->{last_occur_epoch}
-            : defined $last_occur_for{$category}    ? $last_occur_for{$category}
-            :                                         $from_epoch;
-
-        my %has_check_for = (
-            day_of_month => ( defined $day_of_month ? 1 : 0 ),
-            on           => ( defined $on           ? 1 : 0 ),
-            interval     => ( $interval             ? 1 : 0 ),
-        );
-
-        if ( 0 == grep {$_} @has_check_for{qw( on interval day_of_month )} ) {
-
-            croak "no 'interval', 'day_of_month', or 'on' keys: ",
-                Dumper($event_rh);
-        }
-
-        if ( $has_check_for{day_of_month} ) {
-
-            if ( ref $day_of_month ne 'ARRAY' ) {
-
-                $day_of_month = [$day_of_month];
-            }
-
-            for my $day ( @{$day_of_month} ) {
-
-                $day_of_month_count_for{"$category,$day"} = 0;
-            }
-        }
-
-        if ( $has_check_for{on} ) {
-
-            if ( ref $on ne 'ARRAY' ) {
-
-                $on = [$on];
-            }
-
-            my @dates;
-
-            for my $date ( @{$on} ) {
-
-                if ( $date =~ m/\A(\d{1,2})\D?(\d{1,2})\D?(\d{2,4})\z/xms ) {
-
-                    push @dates, [ $1, $2, $3 ];
-
-                    if ( 2 == length $dates[-1]->[-1] ) {
-
-                        $dates[-1]->[-1] += 2000;
-                    }
-                }
-            }
-
-            $on = \@dates;
-        }
-
-        _as_cents( \$amount );
-
-        my $amount_str = $amount;
-
-        _as_dollars( \$amount_str );
-
-        my $epoch = $last_occur_epoch || $from_epoch;
-
-        DAY:
-        while ( $epoch <= $to_epoch ) {
-
-            $epoch += 86_400;
-
-            next DAY
-                if $epoch < $from_epoch;
-
-            my ( $m, $d, $y ) = _formatted_date( $epoch );
-
-            my $hits = 0;
+            my $last_occur_epoch = $last_occur_for{$category};
 
             my $days_elapsed = 0;
 
-            if ( $day_of_month ) {
+            if ( defined $last_occur_epoch ) {
 
-                my $min_elapsed = 25;    # assumes once a month freq
+                $days_elapsed = ( $epoch - $last_occur_epoch ) / 86_400;
+            }
 
-                my $freq = @{$day_of_month};
+            my $desc_rh = $schedule_rh->{$category};
 
-                $min_elapsed = int $min_elapsed / $freq;
+            my $amount
+                = exists $desc_rh->{amount}
+                ? $desc_rh->{amount}
+                : $desc_rh->{ave_amount};
 
-                my ( $hit, $lesser_i_zero ) = ( 0, 0 );
+            if ( !defined $amount ) {
+                carp "skipping $category -- no amount value given";
+                next CAT;
+            }
+
+            _as_cents( \$amount );
+
+            my $amount_str = $amount;
+
+            _as_dollars( \$amount_str );
+
+            my $item = sprintf '%s (%d days since %s)',
+                $category, $days_elapsed,
+                scalar _formatted_date( $last_occur_epoch || $epoch );
+
+            $desc_rh->{has_day} ||= {};
+
+            if ( exists $desc_rh->{on} ) {
+
+                if ( ref $desc_rh->{on} ne 'ARRAY' ) {
+
+                    $desc_rh->{on} = [ $desc_rh->{on} ];
+                }
+
+                ON:
+                for my $on (@{ $desc_rh->{on} }) {
+
+                    if ( $date eq _formatted_date( $on ) ) {
+
+                        $desc_rh->{has_day}->{$date} = 1;
+                        $last_occur_for{$category} = $epoch;
+
+                        my %transaction = (
+                            amount     => $amount,
+                            amount_str => $amount_str,
+                            category   => $category,
+                            date       => $date,
+                            epoch      => $epoch,
+                            item       => $item,
+                            status     => 'predicted',
+                        );
+                        push @transactions, \%transaction;
+
+                        last ON;
+                    }
+                }
+            }
+            elsif ( exists $desc_rh->{day_of_month} ) {
+
+                if ( ref $desc_rh->{day_of_month} ne 'ARRAY' ) {
+
+                    $desc_rh->{day_of_month} = [ $desc_rh->{day_of_month} ];
+                }
+
+                my $is_significant = 0;
+
+                my $frequency = @{ $desc_rh->{day_of_month} };
+
+                # [ 1 ]     => 31 + 1   => 32
+                # [ 1, 15 ] => 15.5 + 2 => 17.5
+                my $max_days = ( 31 / $frequency ) + $frequency;
+
+                # [ 1 ]     => 31 - 1   => 30
+                # [ 1, 15 ] => 15.5 - 2 => 13.5
+                my $min_days = ( 31 / $frequency ) - $frequency;
 
                 DAY:
-                for my $i ( 0 .. $#{$day_of_month} ) {
-
-                    my $day = $day_of_month->[$i];
+                for my $day ( @{ $desc_rh->{day_of_month} } ) {
 
                     next DAY
-                        if $lesser_i_zero;
+                        if exists $desc_rh->{pre_weekend}
+                            && ( $dow eq 'sat' || $dow eq 'sun' );
 
-                    $lesser_i_zero
-                        = $day_of_month_count_for{"$category,$day"} == 0
-                        ? 1
-                        : $lesser_i_zero;
+                    if ($day == $d
+                        || (   exists $desc_rh->{pre_weekend}
+                            && $dow eq 'fri'
+                            && ( $day - 1 == $d || $day - 2 == $d ) )
+                        )
+                    {
+                        next DAY
+                            if $days_elapsed
+                                && $days_elapsed < $min_days;
 
-                    next DAY
-                        if $day != $d;
+                        $desc_rh->{has_day}->{$date} = 1;
+                        $last_occur_for{$category} = $epoch;
 
-                    # 16, 1
-                    # ------
-                    # ...
-                    # $d => 1 no because 16 => 0 ( aka lesser $i is zero )
-                    # $d => 2
-                    # ...
-                    # $d => 15
-                    # $d => 16 yes because no lesser $i is zero
-                    # $d => 17
-                    # ...
-                    # $d => 1
-                    # ...
+                        my %transaction = (
+                            amount     => $amount,
+                            amount_str => $amount_str,
+                            category   => $category,
+                            date       => $date,
+                            epoch      => $epoch,
+                            item       => $item,
+                            status     => 'predicted',
+                        );
+                        push @transactions, \%transaction;
 
-                    $hit = 1;
-                    last DAY;
+                        $is_significant = 1;
+
+                        last DAY;
+                    }
                 }
 
-                $hits += $hit;
+                if ( !$is_significant ) {
 
-                next DAY
-                    if !$hit
-                        && !$has_check_for{interval}
-                        && !$has_check_for{on};
+                    if (   $days_elapsed
+                        && $days_elapsed > $max_days )
+                    {
+                        $desc_rh->{has_day}->{$date} = 1;
+                        $last_occur_for{$category} = $epoch;
 
-                if ( $last_occur_epoch ) {
+                        $days_elapsed ||= 0;
 
-                    $days_elapsed = ( $epoch - $last_occur_epoch ) / 86_400;
+                        my %transaction = (
+                            amount     => $amount,
+                            amount_str => $amount_str,
+                            category   => $category,
+                            date       => $date,
+                            epoch      => $epoch,
+                            item       => $item,
+                            status     => 'predicted',
+                        );
+                        push @transactions, \%transaction;
+
+                        $is_significant = 1;
+                    }
                 }
-                else {
-
-                    $days_elapsed = $min_elapsed + 1;
-                }
-
-                next DAY
-                    if $days_elapsed < $min_elapsed
-                        && !$has_check_for{interval}
-                        && !$has_check_for{on};
-
-                $day_of_month_count_for{"$category,$d"}++;
             }
+            elsif ( exists $desc_rh->{interval} ) {
 
-            if ( $interval ) {
+                $days_elapsed ||= $desc_rh->{interval} + 1;
 
-                if ( $last_occur_epoch ) {
+                next CAT
+                    if exists $desc_rh->{pre_weekend}
+                        && ( $dow eq 'sat' || $dow eq 'sun' );
 
-                    $days_elapsed = ( $epoch - $last_occur_epoch ) / 86_400;
+                if ($days_elapsed >= $desc_rh->{interval}
+                    || (   exists $desc_rh->{pre_weekend}
+                        && $dow eq 'fri'
+                        && (   $days_elapsed + 1 == $desc_rh->{interval}
+                            || $days_elapsed + 2 == $desc_rh->{interval} )
+                    )
+                    )
+                {
+                    $desc_rh->{has_day}->{$date} = 1;
+                    $last_occur_for{$category} = $epoch;
+
+                    my %transaction = (
+                        amount     => $amount,
+                        amount_str => $amount_str,
+                        category   => $category,
+                        date       => $date,
+                        epoch      => $epoch,
+                        item       => $item,
+                        status     => 'predicted',
+                    );
+                    push @transactions, \%transaction;
                 }
-                else {
-
-                    $days_elapsed = $interval;
-                }
-
-                my $hit = $days_elapsed >= $interval ? 1 : 0;
-
-                $hits += $hit;
-
-                next DAY
-                    if !$hit
-                        && !$hits
-                        && !$has_check_for{on};
             }
-
-            if ( $has_check_for{on} ) {
-
-                my $hit = 0;
-
-                DATE:
-                for my $date_ra ( @{$on} ) {
-
-                    my ( $on_month, $on_day, $on_year ) = @{$date_ra};
-
-                    next DATE
-                        if $on_year && $on_year != $y;
-
-                    next DATE
-                        if $on_month && $on_month != $m;
-
-                    next DATE
-                        if $on_day && $on_day != $d;
-
-                    $hit = 1;
-                    $hits++;
-
-                    last DATE;
-                }
-
-                next DAY
-                    if !$hit && !$hits;;
-            }
-
-            while ( $epoch < $today ) {
-
-                $epoch += 86_400;
-            }
-
-            my $date = _formatted_date( $epoch );
-
-            my $since_tag = '(no prior occurrences)';
-
-            if ($last_occur_epoch) {
-
-                $since_tag
-                    = sprintf '(%d days since %s)',
-                    $days_elapsed,
-                    "" . _formatted_date($last_occur_epoch);
-            }
-
-            my %transaction = (
-                amount      => $amount,
-                amount_str  => $amount_str,
-                category    => $category,
-                date        => $date,
-                epoch       => $epoch,
-                item        => "$item $since_tag",
-                status      => 'predicted',
-            );
-            push @transactions, \%transaction;
-
-            $last_occur_epoch = $epoch;
         }
+
+        $epoch += 86_400;
     }
 
-    @transactions = sort { $b->{epoch} <=> $a->{epoch} } ( @transactions, @{ $transaction_ra } );
-
-    return _merge( \@transactions );
+    return _merge( $transaction_ra, \@transactions );
 }
 
 sub _parse_recent {
@@ -2185,13 +2121,13 @@ For example my trash collection payments:
 
 =back
 
-If no categorize_rc is given then the default categorize function is used which
-is not likely to be exactly what you need. A good categorize function is essential
-because there are several functions which operate by consolidating all the known
-transaction data to get a complete history. If the categorize function doesn't
-correctly resolve to a consistent category then there will be discrepencies for
-cases where there is overlap. This overlap will be evident by warning or die
-messages like "transaction discrepancy ...".
+If no categorize_rc is given then the default categorize function is used
+which is not likely to be exactly what you need. A good categorize function is
+essential because there are several functions which operate by consolidating
+all the known transaction data to get a complete history. If the categorize
+function doesn't correctly resolve to a consistent category then there will be
+discrepencies for cases where there is overlap. This overlap will be evident
+by warning or die messages like "transaction discrepancy ...".
 
 =item error_level
 
@@ -2377,6 +2313,7 @@ Example:
       'housing' => {
           'ave_amount'   => '-250000', # cents
           'day_of_month' => 1,
+          'pre_weekend'  => 1, # occur on friday to avoid saturday & sunday
       },
       'income' => {
           amount   => 50000,           # cents
@@ -2392,14 +2329,20 @@ Example:
       },
       'three_time_expense' => {
           'on'     => [
-            '01/05/2012', 
-            '02/05/2012', 
-            '03/05/2012', 
+            '01/05/2012',
+            '02/05/2012',
+            '03/05/2012',
           ],
           'amount' => '$42.00-',    # dollars
       },
   );
-  my $transaction_ra = $nfcu->get_future_transactions( \%schedule );
+  my %config = (
+    account     => 'EveryDay Checking',
+    from_epoch  => 0,
+    to_epoch    => ( time + 86_400 * 90 ),
+    schedule_rh => \%schedule,
+  );
+  my $transaction_ra = $nfcu->get_future_transactions( \%config );
 
 The frequency description must be either a day_of_month or an interval key.
 You might use the result of the get_transaction_schedule function as a basis
@@ -2408,25 +2351,11 @@ schedule is the result of some guess-work. Maybe in a future release ...
 
 =back
 
-=head1 LIMITATIONS
-
-This is currently "EveryDay Checking" oriented. There are some optional
-(and currently undocumented and untested) parameters which could potentially
-be used to focus on particular accounts such as a credit card, loan, savings
-or any other accounts accessible. A future revision will support alternate
-accounts of interest.
-
-As of July 23, 2011 there is a new "nickname" feature for labeling your
-accounts. Until the "EveryDay Checking" limitation is resolved you are
-advised not to use the nickname feature if you want to access your data
-with this module.
-
 =head1 BUGS
 
 Pending billpay transactions go to 'paid' status before going to 'confirmed'
-status. There is a bug in correctly merging the paid status transactions with
-the pending and confirmed. This results in duplicate entries and could have
-an alarming effect.
+status. Sometimes these don't get merged with the current transactions
+correctly.
 
 =head1 AUTHOR
 

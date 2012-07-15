@@ -1,5 +1,12 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.17  Sat Jul 14 22:25:42 2012
+    - support for customized account names
+    - improved transaction prediction algorithm
+
+0.16  Fri Jun 15 21:43:56 2012
+    - bug fix for 'day_of_month' list 
+
 0.16  Wed May 02 19:13:00 2012
     - 'day_of_month' order of values is significant
     - 'on' may be a list of dates
