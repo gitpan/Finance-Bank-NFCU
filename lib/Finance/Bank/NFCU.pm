@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.17;
+our $VERSION = 0.18;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
      $ACCT_ROW_REGEX, $PAYMENT_REGEX, $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX,
@@ -1002,8 +1002,13 @@ sub get_recent_transactions {
 
     my $account_rh = $self->{__nfcu_account_url_rh}->{ lc $account };
 
-    croak "account '$account' is not found"
-        if !$account_rh;
+    if ( !$account_rh ) {
+
+        my @accounts = keys %{ $self->{__nfcu_account_url_rh} };
+
+        croak "account '$account' is not found among ",
+            ( join ', ', @accounts );
+    }
 
     my $account_number = $account_rh->{account_number};
     my $account_url    = $account_rh->{detail_url};
@@ -1062,8 +1067,13 @@ sub get_estatement_transactions {
 
     my $account_rh = $self->{__nfcu_account_url_rh}->{ lc $account };
 
-    croak "account '$account' is not found"
-        if !$account_rh;
+    if ( !$account_rh ) {
+
+        my @accounts = keys %{ $self->{__nfcu_account_url_rh} };
+
+        croak "account '$account' is not found among ",
+            ( join ', ', @accounts );
+    }
 
     my $account_number = $account_rh->{account_number};
 
@@ -1257,8 +1267,11 @@ sub get_billpay_transactions {
     my $balance_rh = $self->{__nfcu_account_url_rh}->{ lc $account };
 
     if ( !$balance_rh ) {
-        carp "account '$account' is not found";
-        return;
+
+        my @accounts = keys %{ $self->{__nfcu_account_url_rh} };
+
+        croak "account '$account' is not found among ",
+            ( join ', ', @accounts );
     }
 
     $account = $balance_rh->{account};
@@ -1365,9 +1378,10 @@ sub get_billpay_transactions {
 sub get_expenditure_report {
     my ( $self, $config_rh ) = @_;
 
-    my ( $from_date, $from_epoch, $to_date, $to_epoch ) = _parse_config(
+    my ( $account, $from_date, $from_epoch, $to_date, $to_epoch ) = _parse_config(
         $config_rh,
-        {   from_date  => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
+        {   account    => qr{\A ( \w+ (?: \s \w+ )* ) \z}xms,
+            from_date  => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
             from_epoch => qr{\A ( \d+ ) \z}xms,
             to_date    => qr{\A ( \d{1,2} / \d{1,2} / \d{4} ) \z}xms,
             to_epoch   => qr{\A ( \d+ ) \z}xms,
@@ -1384,6 +1398,7 @@ sub get_expenditure_report {
         $to_epoch = _compute_epoch( $to_date );
     }
 
+    $account    ||= 'EveryDay Checking';
     $from_epoch ||= 0;
     $to_epoch   ||= time + 7 * 86_400;
 
@@ -1391,7 +1406,7 @@ sub get_expenditure_report {
 
     my %total_for;
     {
-        my $transaction_ra = $self->get_transactions();
+        my $transaction_ra = $self->get_transactions( { account => $account } );
 
         TRANS:
         for my $transaction_rh (@{ $transaction_ra }) {
@@ -1969,7 +1984,11 @@ Union accounts.
       print "$number, $desc -- $dollars\n";
   }
 
-  my $transaction_ra = $nfcu->get_transactions();
+  my $transaction_ra = $nfcu->get_transactions(
+      {   account    => 'EveryDay Checking',
+          from_epoch => ( time - 90 * 86_400 ),
+      }
+  );
 
   for my $transaction_rh (@{ $transaction_ra }) {
 
@@ -1980,15 +1999,11 @@ Union accounts.
 
   my $report_ra = $nfcu->get_expenditure_report();
 
-  for my $category_rh (@{ $report_ra }) {
+  my $tb = Text::Table->new( @{ shift @{ $report_ra } } );
 
-      my $category    = $category_rh->{category};
-      my $total       = $category_rh->{total};
-      my $weekly_ave  = $category_rh->{weekly_ave};
-      my $monthly_ave = $category_rh->{monthly_ave};
+  $tb->load( @{ $report_ra } );
 
-      print "$category: $total, $weekly_ave, $monthly_ave\n";
-  }
+  print $tb;
 
 =head1 ADVISORY
 
@@ -2313,7 +2328,6 @@ Example:
       'housing' => {
           'ave_amount'   => '-250000', # cents
           'day_of_month' => 1,
-          'pre_weekend'  => 1, # occur on friday to avoid saturday & sunday
       },
       'income' => {
           amount   => 50000,           # cents
