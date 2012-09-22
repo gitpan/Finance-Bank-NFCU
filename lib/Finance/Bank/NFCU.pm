@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.18;
+our $VERSION = 0.19;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
      $ACCT_ROW_REGEX, $PAYMENT_REGEX, $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX,
@@ -373,9 +373,12 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
                 @{$transaction_rh}
                 {qw( epoch status item amount category _list_number )};
 
-            my $key = "$amount,$category";
+            my $key_a = "$amount,$category";
+            my $key_b = "$amount,$epoch";
 
-            if ( $is_seen{$key} ) {
+            if ( exists $is_seen{$key_a} || exists $is_seen{$key_b} ) {
+
+                my $key = exists $is_seen{$key_a} ? $key_a : $key_b;
 
                 my $seen_list_number = $is_seen{$key}->{list_number};
                 my $seen_epoch       = $is_seen{$key}->{epoch};
@@ -414,7 +417,12 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
                 _as_dollars( \$transaction_rh->{balance_str} );
             }
 
-            $is_seen{$key} = {
+            $is_seen{$key_a} = {
+                list_number => $list_number,
+                epoch       => $epoch,
+            };
+
+            $is_seen{$key_b} = {
                 list_number => $list_number,
                 epoch       => $epoch,
             };

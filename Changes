@@ -1,5 +1,8 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.19  Fri Sep 21 20:50:09 2012
+    - bug fix in merging lists
+
 0.18  Sun Aug 12 21:13:25 2012
     - bug fix in get_expenditure_report
 
@@ -75,3 +78,4 @@ Revision history for Perl extension Finance::Bank::NFCU.
 0.01  Sun Jun 12 10:58:38 2011
 	- original version; created by h2xs 1.23 with options
 		-XA -n Finance::Bank::NFCU
+
