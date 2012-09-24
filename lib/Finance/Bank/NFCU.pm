@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.19;
+our $VERSION = 0.20;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
      $ACCT_ROW_REGEX, $PAYMENT_REGEX, $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX,
@@ -1844,7 +1844,8 @@ sub get_future_transactions {
             }
             elsif ( exists $desc_rh->{interval} ) {
 
-                $days_elapsed ||= $desc_rh->{interval} + 1;
+                next CAT
+                    if !$days_elapsed && $desc_rh->{interval} > 1;
 
                 next CAT
                     if exists $desc_rh->{pre_weekend}
