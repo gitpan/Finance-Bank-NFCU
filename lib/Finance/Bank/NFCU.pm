@@ -16,7 +16,7 @@ use base qw( WWW::Mechanize );
     use English qw( -no_match_vars $EVAL_ERROR );
 }
 
-our $VERSION = 0.20;
+our $VERSION = 0.21;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
      $ACCT_ROW_REGEX, $PAYMENT_REGEX, $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX,
@@ -487,7 +487,26 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
 
         if ( !exists $date_for{$epoch} ) {
 
-            my $dt = DateTime->from_epoch( epoch => $epoch );
+            my $dt;
+
+            if ( $epoch =~ m{\A ( \d{2} ) \D ( \d{2} ) \D ( \d+ ) \z}xms ) {
+
+                my ( $m, $d, $y ) = ( $1, $2, $3 );
+
+                $dt = DateTime->new(
+                    year      => $y,
+                    month     => $m,
+                    day       => $d,
+                    hour      => 0,
+                    minute    => 0,
+                    second    => 0,
+                    time_zone => $TIME_ZONE,
+                );
+            }
+            else {
+
+                $dt = DateTime->from_epoch( epoch => $epoch );
+            }
 
             $date_for{$epoch}
                 = [ ( split /\D/, $dt->mdy('/') ), lc $dt->day_abbr(), ];

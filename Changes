@@ -1,5 +1,8 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.21  Mon Oct 01 20:31:32 2012
+    - bug for for 'on' parameter
+
 0.20  Sat Sep 23 18:06:22 2012
     - bug fix in predicting next occurance
 
