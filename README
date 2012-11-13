@@ -1,4 +1,4 @@
-Finance-Bank-NFCU version 0.21
+Finance-Bank-NFCU version 0.22
 ==============================
 
 WARNING: This module is designed to interact with your online
@@ -28,15 +28,19 @@ DEPENDENCIES
 
 This module requires these other modules and libraries:
 
+  Cwd
   Data::Dumper
   Date::Manip::TZ
   DateTime
   Env
   File::Slurp
   File::Spec
+  IO::Prompter
+  List::MoreUtils
   Readonly
+  Term::ReadKey
+  Text::FormatTable
   WWW::Mechanize
-  IO::Prompt
 
 COPYRIGHT AND LICENCE
 

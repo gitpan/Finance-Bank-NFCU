@@ -14,9 +14,10 @@ use base qw( WWW::Mechanize );
     use File::Slurp;
     use Date::Manip::TZ;
     use English qw( -no_match_vars $EVAL_ERROR );
+    use Finance::Bank::NFCU::Category qw( categorize );
 }
 
-our $VERSION = 0.21;
+our $VERSION = 0.22;
 
 my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
      $ACCT_ROW_REGEX, $PAYMENT_REGEX, $ESTATEMENT_URL_REGEX, $ESTATEMENT_ROW_REGEX,
@@ -98,9 +99,23 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
 {
     $Carp::Internal{ (__PACKAGE__) }++;
 
+    my $default_account = 'EveryDay Checking';
     my $error_level = 'non-fatal';
     my $now         = time;
     my ( %epoch_for, %date_for, %criterion_for, %item_for );
+
+    sub _default_account {
+        my ($account_rh) = @_;
+
+        if ($account_rh) {
+
+            ($default_account) = map { $_->{account} } grep {
+                $_->{detail_url} =~ m{ \W account=2 (?: \W | \z ) }xms
+            } values %{$account_rh};
+        }
+
+        return $default_account;
+    }
 
     sub _set_error_level {
         return $error_level = $_[0];
@@ -601,153 +616,6 @@ my ( %URL_FOR, $AUTHENTICATED_REGEX, $OFFLINE_REGEX, $ACCT_SUMMARY_REGEX,
         return $item_for{ $_[0] };
     }
 
-    sub _categorize {
-        my ( $item, $amount ) = @_;
-
-        if ( !keys %criterion_for ) {
-
-            %criterion_for = (
-                'administrative' => [
-                    [ qr{ \b dividend \b }xmsi, ],
-                ],
-                'health' => [
-                    [ qr{ \s pharmacy \s }xmsi, ],
-                ],
-                'charity' => [
-                    [ qr{ \s democrats \s }xmsi, ],
-                    [ qr{ \s cancer \s }xmsi, ],
-                    [ qr{ \s moveon[.]org \s }xmsi, ],
-                    [ qr{ \s komen \s }xmsi, ],
-                    [ qr{ \s barackobama[.]c }xmsi, ],
-                    [ qr{ \s rob \s miller \s }xmsi, ],
-                ],
-                'entertainment' => [
-                    [ qr{ bigstar \W tv }xmsi, ],
-                    [ qr{ \W netflix \W }xmsi, ],
-                    [ qr{ \s liquor \s }xmsi, ],
-                ],
-                'gasoline' => [
-                    [ qr{ \s shell \s service }xmsi, ],
-                    [ qr{ \s exxon (?: mobile )? \s }xmsi, ],
-                    [ qr{ \s oil \s }xmsi, ],
-                    [ qr{ \s arco \W }xmsi, ],
-                    [ qr{ \s costco \s gas \s }xmsi, ],
-                ],
-                'income' => [
-                    [ qr{ \s deposit \s }xmsi, ],
-                ],
-                'insurance' => [
-                    [ qr{ nationwide \W* allied }xmsi, ],
-                    [ qr{ \s geico \s }xmsi, ],
-                    [ qr{ \s all \W* state \s }xmsi, ],
-                ],
-                'education' => [
-                    [ qr{ \s u[.]s[.] \s dep(?: t[.] | artment ) \s of \s ed }xmsi, ],
-                    [ qr{ \s sdccd \s }xmsi, ],
-                    [ qr{ \s college \s }xmsi, ],
-                ],
-                'housing' => [
-                    [ qr{ \s mortgage \s }xmsi, ],
-                    [ qr{ home \s* loan }xmsi, ],
-                ],
-                'cell phones' => [
-                    [ qr{ \s verizon \s }xmsi, ],
-                    [ qr{ \s nextel \s }xmsi, ],
-                    [ qr{ \s sprint \s }xmsi, ],
-                ],
-                'cars' => [
-                    [ qr{ \s dmv \W }xmsi, ],
-                    [ qr{ \s smog \s }xmsi, ],
-                    [ qr{ \s autozone \s }xmsi, ],
-                    [ qr{ napa \s store \s }xmsi, ],
-                    [ qr{ jiffy \s lube \s }xmsi, ],
-                    [ qr{ toyota/lexus \s }xmsi, ],
-                ],
-                'insurance' => [
-                    [ qr{ \s auto \s club \s }xmsi, ],
-                    [ qr{ (?: \b | \s ) allied \s insurance }xmsi, ],
-                ],
-                'internet' => [
-                    [ qr{ (?: \b | \s ) cox \s cable \s }xmsi, ],
-                    [ qr{ (?: \b | \s ) cox \s communications }xmsi, ],
-                ],
-                'utilities' => [
-                    [ qr{ \s gas \s & (?: amp; )? \s electric \b }xmsi, ],
-                ],
-                'shopping' => [
-                    [ qr{ \W newegg \W }xmsi, ],
-                    [ qr{ (?: \b | \s ) home \s depot \s }xmsi, ],
-                    [ qr{ \s tech \s 4 \s less \s }xmsi, ],
-                    [ qr{ \s best \s buy \s }xmsi, ],
-                    [ qr{ \s ikea \s }xmsi, ],
-                    [ qr{ \s dixieline \s }xmsi, ],
-                    [ qr{ \s costco \s }xmsi, ],
-                    [ qr{ \s target \s }xmsi, ],
-                    [ qr{ \s amazon (?: [.] com )? \s }xmsi, ],
-                ],
-                'fast food' => [
-                    [ qr{ \s sammy &[#]039; s \s }xmsi, ],
-                    [ qr{ \s noodles \s & }xmsi, ],
-                    [ qr{ \s jack \s in \s the \s box }xmsi, ],
-                    [ qr{ \s islands \s }xmsi, ],
-                    [ qr{ \s juice \s blend \s }xmsi, ],
-                    [ qr{ \s sushi \s }xmsi, ],
-                    [ qr{ \s bistro \s }xmsi, ],
-                    [ qr{ \s carljr \d }xmsi, ],
-                    [ qr{ \s espresso \s }xmsi, ],
-                    [ qr{ \s las \s brasas \s }xmsi, ],
-                    [ qr{ \s pizza \s }xmsi, ],
-                    [ qr{ \s greek \s }xmsi, ],
-                    [ qr{ \s yogurt \s }xmsi, ],
-                    [ qr{ \s chipotle \s }xmsi, ],
-                    [ qr{ \s cafe \s }xmsi, ],
-                    [ qr{ \s pho \s }xmsi, ],
-                    [ qr{ \s submarina \s }xmsi, ],
-                    [ qr{ \s subway \s }xmsi, ],
-                    [ qr{ \s city \s wok \s }xmsi, ],
-                    [ qr{ \s starbucks \s }xmsi, ],
-                    [ qr{ \s sbux \s }xmsi, ],
-                ],
-                'groceries' => [
-                    [ qr{ \s 99 \s ranch \s }xmsi, ],
-                    [ qr{ \s ranch \s market \s }xmsi, ],
-                    [ qr{ \s seafood \s city \s  }xmsi, ],
-                    [ qr{ \s supermarket \s }xmsi, ],
-                    [ qr{ \s marukai \s }xmsi, ],
-                    [ qr{ \s ralph (?: &[#]039; )? s \s }xmsi, ],
-                    [ qr{ \s mitsuwa \s }xmsi, ],
-                    [ qr{ \s fresh \s &amp; \s easy \s }xmsi, ],
-                    [ qr{ \s nijiya \s }xmsi, ],
-                    [ qr{ \s henrys \s }xmsi, ],
-                    [ qr{ \s vons \s }xmsi, ],
-                    [ qr{ \s albertsons \s }xmsi, ],
-                ],
-            );
-        }
-
-        for my $category (keys %criterion_for) {
-
-            CRIT:
-            for my $criterion_ra (@{ $criterion_for{$category} }) {
-
-                my ( $regex, $range_ra ) = @{ $criterion_ra };
-
-                if ( $range_ra ) {
-
-                    my ( $min, $max ) = sort { $a <=> $b } @{ $range_ra };
-
-                    next CRIT
-                        if $amount < $min || $max < $amount;
-                }
-
-                return $category
-                    if $item =~ $regex;
-            }
-        }
-
-        return 'uncategorized';
-    }
-
     sub _cache_filename {
         my ( $cache_dir, $url, $persistence ) = @_;
 
@@ -838,9 +706,18 @@ sub new {
 
     $self->get( $URL_FOR{main} );
 
-    if (  !$self->success()
-        || $self->content() !~ $AUTHENTICATED_REGEX )
-    {
+    if ( !$self->success() ) {
+
+        my $html = $self->content() || "";
+
+        croak "failed to get: ", $URL_FOR{login}, "\n$html\n",
+            "conisder setting: PERL_LWP_SSL_VERIFY_HOSTNAME=0"
+            if $html =~ m{ certificate \s verify \s failed }xms;
+
+        croak "failed to get: ", $URL_FOR{login};
+    }
+
+    if ( $self->content() !~ $AUTHENTICATED_REGEX ) {
 
         $self->get( $URL_FOR{login} );
 
@@ -956,7 +833,8 @@ sub get_balances {
 
                 push @balances, \%balance;
 
-                $self->{__nfcu_account_url_rh}->{ lc $balance{account} } = \%balance;
+                $self->{__nfcu_account_url_rh}->{ lc $balance{account} }
+                    = \%balance;
             }
 
             last TRY
@@ -970,6 +848,12 @@ sub get_balances {
                 if !$self->success()
                     || $self->content() !~ $AUTHENTICATED_REGEX;
         }
+    }
+
+    if ( $self->{__nfcu_account_url_rh}
+        && %{ $self->{__nfcu_account_url_rh} } )
+    {
+        _default_account( $self->{__nfcu_account_url_rh} );
     }
 
     return \@balances;
@@ -1014,13 +898,13 @@ sub get_recent_transactions {
         $to_epoch = _compute_epoch($to_date);
     }
 
-    $account    ||= 'EveryDay Checking';
+    $account    ||= _default_account();
     $from_epoch ||= 0;
     $to_epoch   ||= time + 7 * 86_400;
 
     my $cache_override = $self->{__cache_override};
     my $cache_dir      = $self->{__cache_dir};
-    my $categorize_rc  = $self->{__categorize_rc} || \&_categorize;
+    my $categorize_rc  = $self->{__categorize_rc} || \&categorize;
     my $tidy_rc        = $self->{__tidy_rc} || \&_tidy_item;
 
     return
@@ -1068,7 +952,7 @@ sub get_recent_transactions {
 
     my $transaction_ra
         = _parse_recent( $html, $to_epoch, $from_epoch, $categorize_rc,
-        $tidy_rc );
+        $tidy_rc, $self->{__cache_dir} );
 
     return _audit_transaction_list( $transaction_ra, 0 );
 }
@@ -1082,10 +966,10 @@ sub get_estatement_transactions {
         }
     );
 
-    $account ||= 'EveryDay Checking';
+    $account ||= _default_account();
 
     my $cache_dir     = $self->{__cache_dir};
-    my $categorize_rc = $self->{__categorize_rc} || \&_categorize;
+    my $categorize_rc = $self->{__categorize_rc} || \&categorize;
     my $tidy_rc       = $self->{__tidy_rc} || \&_tidy_item;
 
     return
@@ -1154,7 +1038,8 @@ sub get_estatement_transactions {
     LINK:
     for my $link (@links) {
 
-        my ( $m, $d, $y ) = $link->text() =~ m{( \d+ )\D( \d+ )\D( \d+ )}xms;
+        my ( $m, $d, $y )
+            = $link->text() =~ m{ ( \d+ ) \D ( \d+ ) \D ( \d+ ) }xms;
 
         my $filename = _cache_filename( $cache_dir, "estatement_$m.$d.$y",
             'indefinite' );
@@ -1231,7 +1116,13 @@ sub get_estatement_transactions {
 
             _as_cents( \$amount, \$balance );
 
-            my $category = $categorize_rc->( $item, $amount );
+            my $category = $categorize_rc->(
+                {   date      => $date,
+                    item      => $item,
+                    amount    => $amount,
+                    cache_dir => $self->{__cache_dir}
+                }
+            );
 
             croak
                 "categorize function didn't return a category for: $item ($amount)"
@@ -1280,10 +1171,10 @@ sub get_billpay_transactions {
         $target{paid}    = 1;
     }
 
-    my $account        = $config_rh->{account} || 'EveryDay Checking';
+    my $account        = $config_rh->{account} || _default_account();
     my $cache_override = $self->{__cache_override};
     my $cache_dir      = $self->{__cache_dir};
-    my $categorize_rc  = $self->{__categorize_rc} || \&_categorize;
+    my $categorize_rc  = $self->{__categorize_rc} || \&categorize;
     my $tidy_rc        = $self->{__tidy_rc} || \&_tidy_item;
     my $billpay_url    = $URL_FOR{billpay};
 
@@ -1380,7 +1271,13 @@ sub get_billpay_transactions {
             _as_cents( \$amount );
         }
 
-        my $category = $categorize_rc->( $item, $amount );
+        my $category = $categorize_rc->(
+            {   date      => $date,
+                item      => $item,
+                amount    => $amount,
+                cache_dir => $self->{__cache_dir}
+            }
+        );
 
         croak "categorize function didn't return a category for: $item ($amount)"
             if !defined $category;
@@ -1425,7 +1322,7 @@ sub get_expenditure_report {
         $to_epoch = _compute_epoch( $to_date );
     }
 
-    $account    ||= 'EveryDay Checking';
+    $account    ||= _default_account();
     $from_epoch ||= 0;
     $to_epoch   ||= time + 7 * 86_400;
 
@@ -1676,7 +1573,7 @@ sub get_future_transactions {
         $to_epoch = _compute_epoch( $to_date );
     }
 
-    $account    ||= 'EveryDay Checking';
+    $account    ||= _default_account();
     $from_epoch ||= 0;
     $to_epoch   ||= time + ( 365 * 86_400 );
 
@@ -1902,7 +1799,7 @@ sub get_future_transactions {
 }
 
 sub _parse_recent {
-    my ( $html, $to_epoch, $from_epoch, $categorize_rc, $tidy_rc ) = @_;
+    my ( $html, $to_epoch, $from_epoch, $categorize_rc, $tidy_rc, $cache_dir ) = @_;
 
     my @transactions;
 
@@ -1946,7 +1843,13 @@ sub _parse_recent {
 
         _as_cents( \$amount, \$balance );
 
-        my $category = $categorize_rc->( $item, $amount );
+        my $category = $categorize_rc->(
+            {   date      => $date,
+                item      => $item,
+                amount    => $amount,
+                cache_dir => $cache_dir,
+            }
+        );
 
         croak "categorize function didn't return a category for: $item ($amount)"
             if !defined $category;
@@ -1993,7 +1896,6 @@ Union accounts.
   $nfcu->config(
       {   cache_dir     => '/var/cache/nfcu',
           tidy_rc       => \&tidy_function,
-          categorize_rc => \&categorize_function,
           error_level   => 'non-fatal', # fatal or non-fatal
       }
   );
@@ -2036,23 +1938,22 @@ Union accounts.
 =head1 ADVISORY
 
 This module is designed to interact with your online
-banking service at Navy Federal Credit Union. You are fully
-responsible for the actions taken with this module and you are
-expected to audit the code yourself to be sure that the
-security, accuracy and quality is up to your expectations.
-
-The author cannot assume responsibility for any untoward or
-nefarious activities attempted with this software.
+banking service at Navy Federal Credit Union. The author cannot assume
+responsibility for any untoward or nefarious activities attempted with
+this software.
 
 Don't leave your financial passwords, access numbers or
 user IDs hard coded in your programs.
+
+This module is not created in affiliation with NFCU nor is the author
+officially affiliated with NFCU.
 
 =head1 DESCRIPTION
 
 This is an OO interface to the NFCU online banking interface at:
   https://www.navyfederal.org/
 
-The goal is to provide a convenient read-only interface for your
+The goal is to provide a convenient READ-ONLY interface for your
 financial data. This module also gives you the ability to make
 projections based on known pending transactions and scheduled
 transactions. This can come in handy when contemplating the impact
@@ -2106,12 +2007,6 @@ Caching the data will allow eStatement information to be available
 after it is no longer on the website. This directory will contain your
 financial data in plain text and you should choose it carefully.
 
-=item cache_override
-
-Use this if you want to override any caching behavior for recent
-transations. This may apply if you're expecting a new transaction to appear
-which has occurred since the currently cached data was stored.
-
 =item tidy_rc
 
 This is a code reference for the callback function that you'd like
@@ -2120,7 +2015,7 @@ will be passed as a string and the tidied version should be returned.
 If not given then the default tidy function is used which is optimal for the
 author's purposes.
 
-=item categorize_rc
+=item categorize_rc (optional)
 
 This is a code reference for the callback function that you'd like to use for
 determining which category label applies for a given transaction description.
@@ -2136,6 +2031,10 @@ the transaction description
 =item *
 
 the transaction amount (positive or negative) in cents.
+
+=item *
+
+the cache dirname
 
 =back
 
@@ -2164,13 +2063,10 @@ For example my trash collection payments:
 
 =back
 
-If no categorize_rc is given then the default categorize function is used
-which is not likely to be exactly what you need. A good categorize function is
-essential because there are several functions which operate by consolidating
-all the known transaction data to get a complete history. If the categorize
-function doesn't correctly resolve to a consistent category then there will be
-discrepencies for cases where there is overlap. This overlap will be evident
-by warning or die messages like "transaction discrepancy ...".
+If no categorize_rc is given then the included interactive categorizer function
+will prompt you when an uncategorizable item is encountered. The category data
+will be saved as a .dat file in the given cache directory or in the current
+working directory as category.dat.
 
 =item error_level
 
@@ -2395,17 +2291,16 @@ schedule is the result of some guess-work. Maybe in a future release ...
 
 =head1 BUGS
 
-Pending billpay transactions go to 'paid' status before going to 'confirmed'
-status. Sometimes these don't get merged with the current transactions
-correctly.
+There have been issues with billpay transactions in a transition state dropping
+out.
 
 =head1 AUTHOR
 
-Dylan Doxey, E<lt>dylan.doxey@gmail.com<gt>
+Dylan Doxey, E<lt>dylan@cpan.orgE<gt>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2011 by Dylan Doxey
+Copyright (C) 2012 by Dylan Doxey
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.10.1 or,

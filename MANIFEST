@@ -3,5 +3,6 @@ Makefile.PL
 MANIFEST
 README
 t/Finance-Bank-NFCU-formatting.t
+t/Finance-Bank-NFCU-Category-_build_regex.t
 lib/Finance/Bank/NFCU.pm
 example/example_nfcu.pl

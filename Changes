@@ -1,5 +1,9 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.22  Fri Nov 09 22:13:37 2012
+    - Added the interactive category prompting module
+        Finance::Bank::NFCU::Category
+
 0.21  Mon Oct 01 20:31:32 2012
     - bug for for 'on' parameter
 
