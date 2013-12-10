@@ -1,4 +1,4 @@
-Finance-Bank-NFCU version 0.22
+Finance-Bank-NFCU version 0.23
 ==============================
 
 WARNING: This module is designed to interact with your online
@@ -36,6 +36,7 @@ This module requires these other modules and libraries:
   File::Slurp
   File::Spec
   IO::Prompter
+  JSON
   List::MoreUtils
   Readonly
   Term::ReadKey

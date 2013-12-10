@@ -16,7 +16,6 @@ use base qw( Exporter );
 
 @Finance::Bank::NFCU::Category::EXPORT_OK = qw(
     categorize
-    set_cache_dir
 );
 
 my ( $Cache_Dirname, $Category_Rh, @Categories );
@@ -25,7 +24,7 @@ sub categorize {
     my ($param_rh) = @_;
 
     my $date      = $param_rh->{date}      || "";
-    my $item      = $param_rh->{item}      || "";
+    my $item      = $param_rh->{item}      || $param_rh->{desc} || "";
     my $amount    = $param_rh->{amount}    || "";
     my $cache_dir = $param_rh->{cache_dir} || "";
 
@@ -94,16 +93,19 @@ sub categorize {
         my $pennies  = $criterion_rh->{pennies};
 
         next CRIT
-            if $item !~ $regex;
+            if $item !~ m{$regex}xmsi;
 
-        if ($amount) {
+        if ( $amount ne "" ) {
 
-            if ( $range_ra && @{$range_ra} ) {
+            if ( ref $range_ra eq 'ARRAY' && @{$range_ra} ) {
 
                 my ( $min, $max ) = sort { $a <=> $b } @{$range_ra};
 
-                next CRIT
-                    if $amount < $min || $max < $amount;
+                if ( defined $min && defined $max ) {
+
+                    next CRIT
+                        if $amount < $min || $max < $amount;
+                }
             }
 
             if ( $pennies && length $pennies ) {
@@ -118,7 +120,7 @@ sub categorize {
             }
         }
 
-        return $category;
+        return "$category";
     }
 
     my $category = _promp_category( $date, $item, $amount );
@@ -131,6 +133,8 @@ sub categorize {
 
 sub _promp_category {
     my ( $date, $item, $amount ) = @_;
+
+    local @ARGV = ();
 
     my ( @categories, %is_defined, %category_for, $longest );
     {
@@ -227,22 +231,49 @@ sub _promp_category {
 
         my $regex = _build_regex($item);
 
-        my ( $range, $pennies );
+        my ( $range_ra, $pennies );
         {
-            $range = IO::Prompter::prompt( 'Qualifying range: ', -_ );
+            my $amt = $amount / 100;
+
+            RANGE:
+            {
+                $range_ra = IO::Prompter::prompt( 'Qualifying range: ', -_ );
+
+                last RANGE
+                    if $range_ra eq "";
+
+                $range_ra = [ split m{ \s+ }xms, $range_ra ];
+
+                my ( $min, $max ) = sort { $a <=> $b } @{$range_ra};
+
+                $max = defined $max ? $max : $min;
+
+                if ( $max >= $amt && $amt >= $min ) {
+
+                    $range_ra = [
+                        $min * 100,
+                        $max * 100,
+                    ];
+
+                    last RANGE;
+                }
+
+                warn "$amt is not between $min and $max\n";
+
+                redo RANGE;
+            }
 
             if ( $item =~ m{ transfer \s to \s (?: other|checking ) }xmsi ) {
 
                 $pennies = IO::Prompter::prompt( 'Pennies value: ', -_ );
             }
 
-            $range = length $range ? [ split m{ \s+ }xms, $range ] : undef;
             $pennies = length $pennies ? 0 + $pennies : undef;
         }
 
         push @Categories,
             {
-            range_ra => $range,
+            range_ra => $range_ra,
             regex    => $regex,
             pennies  => $pennies,
             category => $category,
@@ -298,7 +329,7 @@ sub _build_regex {
         join ' \s+ ',
         @tokens;
 
-    return qr{$regex}xmsi;
+    return " $regex ";
 }
 
 sub _store {

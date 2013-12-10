@@ -1,5 +1,13 @@
 Revision history for Perl extension Finance::Bank::NFCU.
 
+0.23  Mon Dec 09 22:10:59 2013
+    - Refinements to interactive category module
+    - Added improved parsing subclass modules:
+        Finance::Bank::NFCU::HTML::Estatement
+        Finance::Bank::NFCU::HTML::BillPay
+        Finance::Bank::NFCU::HTML::Recent
+    - Fixed various subtle bugs in get_future_transactions
+
 0.22  Fri Nov 09 22:13:37 2012
     - Added the interactive category prompting module
         Finance::Bank::NFCU::Category

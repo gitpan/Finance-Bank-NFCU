@@ -3,7 +3,7 @@
 # NFCU appears to use a cert which fails verification.
 # Setting this environment var is a convenient work-around.
 # Please email the author if you know better.
-# $ENV{PERL_LWP_SSL_VERIFY_HOSTNAME} = 0;
+$ENV{PERL_LWP_SSL_VERIFY_HOSTNAME} = 0;
 
 use strict;
 use warnings;

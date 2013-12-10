@@ -1,0 +1,432 @@
+=head1 NAME
+
+Finance::Bank::NFCU - Module for accessing data in your Navy Federal Credit
+Union accounts.
+
+=head1 SYNOPSIS
+
+  use Finance::Bank::NFCU;
+
+  my %credentials = (
+      access_number => '111111111111',
+      user_id       => '1234',
+      password      => '*********',
+  );
+  my $ncfu = Finance::Bank::NFCU->new( \%credentials )
+      || die "failed to authenticate";
+
+  $nfcu->config(
+      {   cache_dir     => '/var/cache/nfcu',
+          tidy_rc       => \&tidy_function,
+          error_level   => 'non-fatal', # fatal or non-fatal
+      }
+  );
+
+  my $balances_ra = $nfcu->get_balances();
+
+  die "Your session has (probably) expired."
+      if !defined $balances_ra;
+
+  for my $balance_rh (@{ $balances_ra }) {
+
+      my $number  = $balance_rh->{account_number};
+      my $desc    = $balance_rh->{description};
+      my $dollars = $balance_rh->{balance};
+
+      print "$number, $desc -- $dollars\n";
+  }
+
+  my $transaction_ra = $nfcu->get_transactions(
+      {   account    => 'EveryDay Checking',
+          from_epoch => ( time - 90 * 86_400 ),
+      }
+  );
+
+  for my $transaction_rh (@{ $transaction_ra }) {
+
+      my ( $date, $item, $amount ) = @{ $transaction_rh }{qw( date item amount )};
+
+      print "$date -- $item -- $amount\n";
+  }
+
+  my $report_ra = $nfcu->get_expenditure_report();
+
+  my $tb = Text::Table->new( @{ shift @{ $report_ra } } );
+
+  $tb->load( @{ $report_ra } );
+
+  print $tb;
+
+=head1 ADVISORY
+
+This module is designed to interact with your online
+banking service at Navy Federal Credit Union. The author cannot assume
+responsibility for any untoward or nefarious activities attempted with
+this software.
+
+Don't leave your financial passwords, access numbers or
+user IDs hard coded in your programs.
+
+This module is not created in affiliation with NFCU nor is the author
+officially affiliated with NFCU.
+
+=head1 DESCRIPTION
+
+This is an OO interface to the NFCU online banking interface at:
+  https://www.navyfederal.org/
+
+The goal is to provide a convenient READ-ONLY interface for your
+financial data. This module also gives you the ability to make
+projections based on known pending transactions and scheduled
+transactions. This can come in handy when contemplating the impact
+of a purchase or a new monthly expense.
+
+Use the sample program in the example directory to get started.
+
+=head1 METHODS
+
+=over
+
+=item new
+
+Creates a new instance of this class which has used the given
+credentials to authenticate on the NFCU web interface. If the login
+event fails on the web interface then undef is returned.
+
+Expects a hash ref of credentials with the following keys:
+
+=over
+
+=item access_number
+
+Same as the field labeled 'Access Number' on the website.
+
+=item user_id
+
+Same as the field labeled 'User ID' on the website.
+
+=item password
+
+Same as the 'Password' field on the website.
+
+=back
+
+None of the above values are cached or retained by this module
+in any form. You need to make yourself aware of, and assume full
+responsibility for, any potential security risks that may be
+involved with passing your online banking credentials via this module.
+
+=item config
+
+Use this function to configure various internal parameters including:
+
+=over
+
+=item cache_dir
+
+The directory where you'd like to cache the bank statement source data.
+Caching the data will allow eStatement information to be available
+after it is no longer on the website. This directory will contain your
+financial data in plain text and you should choose it carefully.
+
+=item tidy_rc
+
+This is a code reference for the callback function that you'd like
+to use for tidying up the transaction labels. The transaction label
+will be passed as a string and the tidied version should be returned.
+If not given then the default tidy function is used which is optimal for the
+author's purposes.
+
+=item categorize_rc (optional)
+
+This is a code reference for the callback function that you'd like to use for
+determining which category label applies for a given transaction description.
+
+The categorize callback receives two arguments:
+
+=over
+
+=item *
+
+the transaction description
+
+=item *
+
+the transaction amount (positive or negative) in cents.
+
+=item *
+
+the cache dirname
+
+=back
+
+If no category is identified then the function ought to return something
+like 'uncategorized'. If undef is returned as a category then this module
+will croak. (You could do that on purpose to help identify transactions which
+are failing to be properly categorized.)
+
+The categorize function ought to recognize a payment in varied formats.
+
+For example my trash collection payments:
+
+=over
+
+=item eStatement format
+
+  Paid To - Nationwideallied Online Pmt Chk 6410085
+
+=item recent transactions format
+
+  ACH Transaction - NATIONWIDEALLIED ONLINE PMT
+
+=item billpay format
+
+  Allied Waste
+
+=back
+
+If no categorize_rc is given then the included interactive categorizer function
+will prompt you when an uncategorizable item is encountered. The category data
+will be saved as a .dat file in the given cache directory or in the current
+working directory as category.dat.
+
+=item error_level
+
+As the transactions are read from the web content they're validated for
+accuracy by double checking the amounts and their affects on the balance.
+If the math doesn't work out between two adjacent transactions then this
+module will emit a warning. Set this config parameter to 'fatal' to
+upgrade this situation to a fatal error. This situation is unlikely if
+you've written a thorough categorize function. (See categorize_rc above.)
+
+=back
+
+=item get_balances
+
+Returns a hash of the accounts and the current balances as indicated on
+the main account page.
+
+=item get_recent_transactions
+
+Returns an array ref of transaction hash refs. The transactions are drawn
+from the list of recent activity for the current statement period.
+
+=item get_estatement_transactions
+
+Returns an array ref of transaction hash refs. The transactions are drawn
+from the eStatement section and includes all available history.
+
+=item get_billpay_transactions
+
+Returns an array ref of transaction hash refs. The transactions are drawn
+from the billpay section of the website and includes pending status
+transactions.
+
+=item get_transactions
+
+Returns an array ref of transaction hash refs. The transactions are an
+audited aggregation of the transactions returned from the current statement,
+the eStatements, and pending transactions in the billpay section. The
+pending billpay transactions suggest a predicted balance history which
+is based on the current balance as of the most recent confirmed
+transaction.
+
+=item get_expenditure_report
+
+This analyzes all the accessible transaction data and computes stats on the
+amount spent on the various categories (as determined by the categorize_rc
+function).
+
+Accepts a configuration hash ref with two keys:
+
+=over
+
+=item *
+
+from_date -- Date to start expenditure analysis (MM/DD/YYYY).
+
+=item *
+
+to_date -- Date to terminate expenditure analysis (MM/DD/YYYY).
+
+=back
+
+Example:
+
+  my %dates = (
+      from_date => '04/03/2011',
+      to_date   => '07/03/2011',
+  );
+  my $report_ra = $nfcu->get_expenditure_report( \%dates );
+
+  print "Expenditure Report:\n";
+
+  my $tb = Text::Table->new( @{ shift @{ $report_ra } } );
+  $tb->load( @{ $report_ra } );
+
+  print "\n$tb\n\n";
+
+You may also pass dates in epoch values with they keys from_epoch, to_epoch.
+
+  my %dates = (
+      from_epoch => 0,
+      to_epoch   => time,
+  );
+  my $report_ra = $nfcu->get_expenditure_report( \%dates );
+
+=item get_transaction_schedule
+
+This function analyzes your expenditures and composes a hash of categories and
+the apparent schedule of transaction activity. This could be useful in making
+predictions about future spending habits.
+
+The output may look something like this:
+
+  {
+      'groceries' => {
+          'ave_amount'       => '-5083.95',
+          'ave_interval'     => '4',
+          'day_of_month'     => 11,
+          'interval'         => 6,
+          'item_rh' => {
+              'vons spring valley ca'                => 1,
+              'vons san diego ca'                    => 1,
+              'vons store 2118 san diego'            => 1,
+              'vons chula visa ca'                   => 1,
+              'seafood city market. national cit ca' => 1,
+              '0124 henrys la mesa ca'               => 2,
+              'vons la mesa ca'                      => 1,
+          },
+          'last_occur_date'  => '07/03/2011',
+          'last_occur_epoch' => 1309676400,
+          'monthly_ave'      => '-33893',
+          'occurrence_count' => 20,
+          'total'            => -101679,
+          'weekly_ave'       => '-7908.36666666667',
+      },
+      'housing' => {
+          'ave_amount'       => '-252023',
+          'ave_interval'     => '30',
+          'day_of_month'     => 1,
+          'interval'         => 30,
+          'item_rh' => {
+              'bac home loans online pmt'   => 1,
+              'bachomeloansvclp online pmt' => 1,
+              'bank of america online pmt'  => 1
+          },
+          'last_occur_date'  => '07/01/2011',
+          'last_occur_epoch' => 1309503600,
+          'monthly_ave'      => '-252023',
+          'occurrence_count' => 3,
+          'total'            => -396069,
+          'weekly_ave'       => '-30805.3666666667',
+      },
+  }
+
+This result indicates grocery and housing payments made
+over a three month period. The program doesn't know the difference
+between a regularly scheduled expense (such as housing) vs.
+a not-so regular expense like groceries. So it's up to you to
+decide the difference as indicated in keys like 'day_of_month'
+and 'ave_interval'.
+
+Accepts an optional configuration hash ref with two keys:
+
+=over
+
+=item *
+
+from_date -- Date to start expenditure analysis (MM/DD/YYYY).
+
+=item *
+
+to_date -- Date to terminate expenditure analysis (MM/DD/YYYY).
+
+=back
+
+Example:
+
+  my %dates = (
+      from_date => '04/03/2011',
+      to_date   => '07/03/2011',
+  );
+  my $schedule_rh = $nfcu->get_transaction_schedule( \%dates );
+
+You may also pass dates in epoch values with they keys from_epoch, to_epoch.
+
+  # this is the default if the date hash is not given.
+  my %dates = (
+      from_epoch => 0,
+      to_epoch   => time,
+  );
+  my $schedule_rh = $nfcu->get_transaction_schedule( \%dates );
+
+
+=item get_future_transactions
+
+Projects future expenditures by extrapolating from current transaction
+history according to the given transaction schedule. The schedule is
+a hash of categories (as defined by the categorize function).
+
+Example:
+
+  my %schedule = (
+      'housing' => {
+          'ave_amount'   => '-250000', # cents
+          'day_of_month' => 1,
+      },
+      'income' => {
+          amount   => 50000,           # cents
+          'day_of_month' => [ 1, 16 ], # may be a list
+      },
+      'groceries' => {
+          'interval'   => 13,
+          'ave_amount' => '$50.95-',   # dollars
+      },
+      'one_time_expense' => {
+          'on'     => '01/05/2012', # mm/dd/yyyy
+          'amount' => '$42.00-',    # dollars
+      },
+      'three_time_expense' => {
+          'on'     => [
+            '01/05/2012',
+            '02/05/2012',
+            '03/05/2012',
+          ],
+          'amount' => '$42.00-',    # dollars
+      },
+  );
+  my %config = (
+    account     => 'EveryDay Checking',
+    from_epoch  => 0,
+    to_epoch    => ( time + 86_400 * 90 ),
+    schedule_rh => \%schedule,
+  );
+  my $transaction_ra = $nfcu->get_future_transactions( \%config );
+
+The frequency description must be either a day_of_month or an interval key.
+You might use the result of the get_transaction_schedule function as a basis
+for this schedule. But you'll need to clean it up because the generated
+schedule is the result of some guess-work. Maybe in a future release ...
+
+=back
+
+=head1 BUGS
+
+There have been issues with billpay transactions in a transition state dropping
+out.
+
+=head1 AUTHOR
+
+Dylan Doxey, E<lt>dylan@cpan.orgE<gt>
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright (C) 2012 by Dylan Doxey
+
+This library is free software; you can redistribute it and/or modify
+it under the same terms as Perl itself, either Perl version 5.10.1 or,
+at your option, any later version of Perl 5 you may have available.
+
+
+=cut

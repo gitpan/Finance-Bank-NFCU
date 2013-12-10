@@ -76,7 +76,7 @@ for my $item (@items) {
 
     my $regex = Finance::Bank::NFCU::Category::_build_regex($item);
 
-    like( $item, $regex, "correct regex for: $item" ) || last ITEM;
+    like( $item, qr{ $regex }xmsi, "correct regex for: $item" ) || last ITEM;
 }
 
 __END__

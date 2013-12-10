@@ -15,6 +15,7 @@ WriteMakefile(
         'File::Slurp'       => '9999.13',
         'File::Spec'        => '3.33',
         'IO::Prompter'      => '0',
+        'JSON'              => '0',
         'List::MoreUtils'   => '0',
         'Readonly'          => '1.02',
         'Term::ReadKey'     => '0',
@@ -24,9 +25,8 @@ WriteMakefile(
     (   $] >= 5.005
         ?    ## Add these new keywords supported since 5.005
             (
-            ABSTRACT_FROM =>
-                'lib/Finance/Bank/NFCU.pm',    # retrieve abstract from module
-            AUTHOR => 'Dylan Doxey <dylan@cpan.org>'
+            ABSTRACT_FROM => 'lib/Finance/Bank/NFCU.pod',    # retrieve abstract from module
+            AUTHOR        => 'Dylan Doxey <dylan@cpan.org>'
             )
         : ()
     ),
