@@ -19,7 +19,7 @@ use base qw( WWW::Mechanize );
     use Finance::Bank::NFCU::HTML::BillPay;
 }
 
-our $VERSION = 0.23;
+our $VERSION = 0.24;
 
 my (%URL_FOR,                 $AUTHENTICATED_REGEX,
     $OFFLINE_REGEX,           $ACCT_SUMMARY_REGEX,
@@ -664,7 +664,9 @@ my (%URL_FOR,                 $AUTHENTICATED_REGEX,
 
         $url .= '.html';
 
-        return File::Spec->catfile( $cache_dir, $url );
+        my ($filename) = File::Spec->catfile( $cache_dir, $url ) =~ m{( .+ )}xms;
+
+        return $filename;
     }
 
     sub _fetch_cache {
@@ -1249,7 +1251,8 @@ sub get_future_transactions {
         my $date     = $trans_hr->{date};
 
         next TRANS
-            if $trans_hr->{status} ne 'confirmed';
+            if $trans_hr->{status} ne 'confirmed'
+            && $trans_hr->{status} ne 'pending';
 
         next TRANS
             if !exists $schedule_rh->{$category};
@@ -1296,7 +1299,8 @@ sub get_future_transactions {
             next CAT
                 if $days_elapsed <= 0;
 
-##print "$category $date days elapsed: ( $epoch - $last_occur_epoch ) / 86_400 => $days_elapsed\n";
+## print "$category $date days elapsed: ( $epoch - $last_occur_epoch ) / 86_400 => $days_elapsed\n"
+##     if $days_elapsed == 31 && $category eq 'housing';
 
             my $desc_rh = $schedule_rh->{$category};
 

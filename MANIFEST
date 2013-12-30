@@ -7,11 +7,8 @@ lib/Finance/Bank/NFCU/HTML.pm
 lib/Finance/Bank/NFCU/HTML/Recent.pm
 lib/Finance/Bank/NFCU.pm
 lib/Finance/Bank/NFCU.pod
-Makefile
 Makefile.PL
 MANIFEST
-MYMETA.json
-MYMETA.yml
 README
 t/Finance-Bank-NFCU-Category-_build_regex.t
 t/Finance-Bank-NFCU-formatting.t
